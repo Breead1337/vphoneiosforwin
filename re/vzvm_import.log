@@ -1,0 +1,5 @@
+INFO  IMPORTING: Loaded 0 additional files (HeadlessAnalyzer)  
+ERROR Unexpected exception getting Decompiler result (InternalResultListener) java.util.concurrent.ExecutionException: java.lang.ArrayIndexOutOfBoundsException: Index 2 out of bounds for length 2
+INFO  REPORT: Analysis succeeded for file: file:///D:/vphonewin/fw/vz/com.apple.Virtualization.VirtualMachine (HeadlessAnalyzer)  
+INFO  REPORT: Save succeeded for: /com.apple.Virtualization.VirtualMachine (vzvm:/com.apple.Virtualization.VirtualMachine) (HeadlessAnalyzer)  
+INFO  REPORT: Import succeeded (HeadlessAnalyzer)  

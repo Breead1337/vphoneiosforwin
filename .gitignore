@@ -1,0 +1,32 @@
+# --- НИКОГДА не коммитить в этот публичный репозиторий ---
+# Проприетарные прошивки Apple (качает каждый сам, легально):
+fw/
+*.ipsw
+*.ota
+*.dmg
+*.aea
+AVPBooter*.bin
+AVPSEPBooter*.bin
+com.apple.Virtualization.VirtualMachine
+kernelcache*
+*.im4p
+*.img4
+
+# Вендор/третьесторонние бинари:
+tools/ipsw.exe
+tools/ipsw.zip
+tools/ghidra_*_PUBLIC/
+tools/completions/
+tools/manpages/
+src/            # клон Inferno — берётся отдельно (см. CREATE.md)
+ghidra/         # проекты Ghidra (содержат декомпиляцию Apple)
+
+# Результаты сборки / трассировки:
+work/
+build/
+*.log
+!re/*.log
+*.uart
+*.img
+__pycache__/
+*.pyc
