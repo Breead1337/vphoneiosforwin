@@ -96,3 +96,9 @@ memset. Последний TB = 0x103370 = HVC #0 (FUN_00103370). memset кон�
 SYSTEM_RESET (не reboot-петля, не hang). Привязку HVC к LR=0x11b7d8 снял (ненадёжный -d cpu).
 Надёжный след. шаг: инструментировать HVC в самой машине (печать X0..X7 + ELR) — увидеть точную
 цепочку до reset и провалившуюся проверку measured-boot.
+
+## Обновление 15.09 (7) — КОРЕНЬ: firebloom bounds-panic в main
+Вставлен HVC-логгер в машину (overlay/target/arm/tcg/psci.c). Оба HVC из lr=0x11d6ac (reboot в хвосте
+FUN_0011b730). Аргументы = firebloom_panic("main", ...) с форматом "(%zu < %zu)" — boot-abort это
+firebloom bounds-check паника: занулённое поле (из пустышечных SEP-ответов) даёт указатель/длину вне
+границ → reboot. Дальше: поймать первый упавший bounds-check и связать поле с нужным SEP-ответом.

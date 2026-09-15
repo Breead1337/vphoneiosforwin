@@ -325,3 +325,25 @@ overlay) и печатать X0..X7 + ELR_EL2 (истинный адрес во�
 2. поймать, какая проверка (какое сравнение/бит) в measured-boot проваливается;
 3. связать с конкретным SEP-ответом (op3 inline / op4 nonce / OOL), который надо отдать не нулями.
 Альтернатива — поставить gdb-multiarch (нужна сеть в WSL) и bp на 0x103370 с bt.
+
+### КОРЕНЬ: firebloom bounds-panic → PSCI_SYSTEM_RESET (HVC-логгер в машине)
+Вставлен надёжный лог HVC прямо в arm_handle_psci_call (overlay/target/arm/tcg/psci.c: печать
+X0..X7 + LR + PC/ELR). Прогон дал ТОЧНО:
+```
+HVC/PSCI x0=0x84000000 ... x6=0x14690b x7=0xa0 lr=0x11d6ac pc=0x103374 el=1   (PSCI_VERSION)
+HVC/PSCI x0=0x84000009 ... x7=0xa0            lr=0x11d6ac pc=0x103374 el=1   (PSCI_SYSTEM_RESET)
+```
+Оба HVC из lr=0x11d6ac — это reboot-рутина в хвосте FUN_0011b730 (Ghidra склеила блоки в одну функцию).
+Аргументы указывают на панику: x6=0x14690b = ROM-строка "main", рядом 0x146900="...loom_panic"
+(**firebloom_panic** — Apple memory-safety), формат 0x1468eb = " (%zu < %zu)\n" (assert границ).
+
+Вывод (корень): boot-abort = **firebloom bounds-check паника в main** ("(%zu < %zu)"), т.е. какое-то
+поле пришло из занулённой структуры → указатель/длина вне [lo,hi) → firebloom_panic → reboot.
+Всюду в AVPBooter стоят проверки `lo <= p && p < hi` с FUN_0012ea7c() на провале — это та же
+firebloom-инструментация. Наши SEP-ответы пустышки ⇒ поле ноль ⇒ проверка падает.
+
+### Следующий шаг
+- Снять, КАКАЯ проверка первой падает: логировать в машине обращения к FUN_0012ea7c/firebloom_panic
+  сайтам (или bp), поймать первый bounds-fail ДО reboot и его адрес.
+- Связать поле с конкретным SEP-ответом (op3 inline resp[4:16] / op4 20-B nonce / OOL) и отдать его
+  не нулями в vr-sep-mbox.c; проверить, что firebloom-паника уходит.
