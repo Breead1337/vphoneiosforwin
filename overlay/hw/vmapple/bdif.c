@@ -85,13 +85,21 @@ static uint64_t bdif_read(void *opaque, hwaddr offset, unsigned size)
         ret = REG_STATUS_ACTIVE;
         break;
     case REG_CFG:
-        ret = REG_CFG_ACTIVE;
+        if (devid == DEVID_USB) {
+            ret = 0x1a01;
+        } else {
+            ret = REG_CFG_ACTIVE;
+        }
         break;
     case REG_UNK1:
         ret = 0x420;
         break;
     case REG_BUSY:
-        ret = REG_BUSY_READY;
+        if (devid == DEVID_USB) {
+            ret = 0;
+        } else {
+            ret = REG_BUSY_READY;
+        }
         break;
     case REG_UNK2:
         ret = 0x1;
@@ -111,6 +119,7 @@ static uint64_t bdif_read(void *opaque, hwaddr offset, unsigned size)
         break;
     }
 
+    qemu_log_mask(LOG_UNIMP, "bdif_read: devid=%#" PRIx64 " off=%#" HWADDR_PRIx " -> %#" PRIx64 "\n", devid, offset & ~REG_DEVID_MASK, ret);
     trace_bdif_read(offset, size, ret);
     return ret;
 }
@@ -180,6 +189,8 @@ static void vblk_cmd(uint64_t devid, BlockBackend *blk, uint64_t gp_addr,
     switch (req.data.flags) {
     case VBLK_DATA_FLAGS_READ:
         r = blk_pread(blk, off, req.data.len, buf, 0);
+        qemu_log_mask(LOG_UNIMP, "bdif vblk_read: %s addr=%#" PRIx64 " off=%#" PRIx64 " len=%u r=%d\n",
+                      devid == DEVID_AUX ? "aux" : "root", req.data.addr, off, req.data.len, r);
         trace_bdif_vblk_read(devid == DEVID_AUX ? "aux" : "root",
                              req.data.addr, off, req.data.len, r);
         if (r < 0) {
@@ -192,9 +203,13 @@ static void vblk_cmd(uint64_t devid, BlockBackend *blk, uint64_t gp_addr,
         }
         break;
     case VBLK_DATA_FLAGS_WRITE:
-        /* Not needed, iBoot only reads */
+        r = blk_pwrite(blk, off, req.data.len, buf, 0);
+        qemu_log_mask(LOG_UNIMP, "bdif vblk_write: %s addr=%#" PRIx64 " off=%#" PRIx64 " len=%u r=%d\n",
+                      devid == DEVID_AUX ? "aux" : "root", req.data.addr, off, req.data.len, r);
+        ret = VBLK_RET_SUCCESS;
         break;
     default:
+        qemu_log_mask(LOG_UNIMP, "bdif vblk unknown flags=%#x\n", req.data.flags);
         break;
     }
 
@@ -209,6 +224,7 @@ static void bdif_write(void *opaque, hwaddr offset,
     VMAppleBdifState *s = opaque;
     uint64_t devid = (offset & REG_DEVID_MASK);
 
+    qemu_log_mask(LOG_UNIMP, "bdif_write: devid=%#" PRIx64 " off=%#" HWADDR_PRIx " val=%#" PRIx64 "\n", devid, offset & ~REG_DEVID_MASK, value);
     trace_bdif_write(offset, size, value);
 
     switch (offset & ~REG_DEVID_MASK) {

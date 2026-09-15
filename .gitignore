@@ -15,11 +15,14 @@ kernelcache*
 # Вендор/третьесторонние бинари:
 tools/ipsw.exe
 tools/ipsw.zip
+tools/LICENSE
+tools/README.md
+tools/config.example.yml
 tools/ghidra_*_PUBLIC/
 tools/completions/
 tools/manpages/
-src/            # клон Inferno — берётся отдельно (см. CREATE.md)
-ghidra/         # проекты Ghidra (содержат декомпиляцию Apple)
+src/
+ghidra/
 
 # Результаты сборки / трассировки:
 work/
