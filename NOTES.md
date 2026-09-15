@@ -90,3 +90,9 @@ memset. Последний TB = 0x103370 = HVC #0 (FUN_00103370). memset кон�
 Оба HVC из LR=0x11b7d8 (FUN_0011b730): PSCI_VERSION, затем PSCI_SYSTEM_RESET. psci-conduit=HVC
 машина ставит сама. Значит measured-boot проваливает проверку и осознанно ребутит (не hang/runaway).
 Причина — пустышечные SEP-ответы. Дальше: реверс ветки reset в FUN_0011b730 и что она сравнивает.
+
+## Обновление 15.09 (6) — SYSTEM_RESET подтверждён чисто
+`-no-reboot -no-shutdown`: ROM-вход 1 раз, CPU заморожен на HVC 0x103370 → гость вызвал PSCI
+SYSTEM_RESET (не reboot-петля, не hang). Привязку HVC к LR=0x11b7d8 снял (ненадёжный -d cpu).
+Надёжный след. шаг: инструментировать HVC в самой машине (печать X0..X7 + ELR) — увидеть точную
+цепочку до reset и провалившуюся проверку measured-boot.
