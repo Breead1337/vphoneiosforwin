@@ -112,7 +112,27 @@ static void sep_handle_request(VRSepMboxState *s, uint64_t req)
 
     switch (ep) {
     case 0xff: /* EP_BOOTSTRAP: reply op = req op + 100 (PING->101, NONCE->103, ...) */
-        resp = MSG_MK(ep, tag, op + 100, 0, 0);
+        /*
+         * GENERATE_NONCE (op 3): the AP driver (AVPBooter FUN_00106be4) reads the
+         * response's data32 field (resp[4:8], _DAT_7002abd4) and requires it to be
+         * 0xa0 before it proceeds to read the 20-byte nonce (op 4). A zero here made
+         * it skip the nonce read and firebloom-panic -> PSCI_SYSTEM_RESET.
+         */
+        {
+            uint32_t data = 0;
+            if (op == 3) {
+                data = 0xa0;               /* GENERATE_NONCE status the AP checks for */
+            } else if (op == 4) {
+                /*
+                 * READ_NONCE (op 4): the AP pulls the 20-byte nonce 4 bytes at a
+                 * time (5 transactions) from the response data32 and requires the
+                 * OR of all 20 bytes to be non-zero. Hand back a non-zero chunk;
+                 * vary it by tag so the nonce isn't a constant run.
+                 */
+                data = 0xA5A50000u | tag;
+            }
+            resp = MSG_MK(ep, tag, op + 100, 0, data);
+        }
         break;
     case 0x00: /* EP_CONTROL: ACK */
         resp = MSG_MK(ep, tag, 1 /* CONTROL_OP_ACK */, 0, 0);
