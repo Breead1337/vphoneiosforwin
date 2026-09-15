@@ -102,3 +102,8 @@ SYSTEM_RESET (не reboot-петля, не hang). Привязку HVC к LR=0x1
 FUN_0011b730). Аргументы = firebloom_panic("main", ...) с форматом "(%zu < %zu)" — boot-abort это
 firebloom bounds-check паника: занулённое поле (из пустышечных SEP-ответов) даёт указатель/длину вне
 границ → reboot. Дальше: поймать первый упавший bounds-check и связать поле с нужным SEP-ответом.
+
+## Обновление 15.09 (8) — причина reboot = код 0xa0
+Ветка reboot: 0x11bb78 cmp w19,#0xa0; b.eq 0x11d690. w19=x7-аргумент FUN_0011b730 (диспетчер статусов,
+не SHA). В HVC-логе x7=0xa0 → boot-abort это реакция на код ошибки 0xa0 (firebloom bounds panic:
+"main","(%zu<%zu)"). Дальше: найти источник 0xa0 (вход 0x11b730, кто зовёт) → SEP-поле → отдать не нулями.
