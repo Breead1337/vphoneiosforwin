@@ -236,6 +236,33 @@ static void bdif_write(void *opaque, hwaddr offset,
         case DEVID_AUX:
             vblk_cmd(devid, s->aux, value, 0x0);
             break;
+        case DEVID_USB: {
+            uint8_t d[0x80];
+            if (dma_memory_read(&address_space_memory, value, d, sizeof(d), MEMTXATTRS_UNSPECIFIED) == MEMTX_OK) {
+                char hex[3 * 16 + 1];
+                qemu_log_mask(LOG_UNIMP, "bdif DEVID_USB cmd @%#" PRIx64 ":\n", value);
+                for (int i = 0; i < 0x20; i += 16) {
+                    int p = 0;
+                    for (int j = 0; j < 16; j++) {
+                        p += snprintf(hex + p, sizeof(hex) - p, "%02x ", d[i + j]);
+                    }
+                    qemu_log_mask(LOG_UNIMP, "  %#04x: %s\n", i, hex);
+                }
+                uint64_t sub_addr = ldq_le_p(d);
+                uint8_t buf[0x80];
+                if (dma_memory_read(&address_space_memory, sub_addr, buf, sizeof(buf), MEMTXATTRS_UNSPECIFIED) == MEMTX_OK) {
+                    qemu_log_mask(LOG_UNIMP, "  -> buffer @%#" PRIx64 ":\n", sub_addr);
+                    for (int i = 0; i < sizeof(buf); i += 16) {
+                        int p = 0;
+                        for (int j = 0; j < 16; j++) {
+                            p += snprintf(hex + p, sizeof(hex) - p, "%02x ", buf[i + j]);
+                        }
+                        qemu_log_mask(LOG_UNIMP, "    %#04x: %s\n", i, hex);
+                    }
+                }
+            }
+            break;
+        }
         }
         break;
     }

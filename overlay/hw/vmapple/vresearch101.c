@@ -228,10 +228,36 @@ static void load_firmware(VResearchMachineState *vms)
     }
     memory_region_init_ram(&vms->fw_mr, NULL, "avpbooter", memmap[VR_FIRMWARE].size,
                            &error_fatal);
-    if (load_image_mr(fname, &vms->fw_mr) < 0) {
-        error_report("vresearch101: cannot load ROM '%s'", fname);
+
+    GError *err = NULL;
+    gsize len = 0;
+    g_autofree char *contents = NULL;
+    if (!g_file_get_contents(fname, &contents, &len, &err)) {
+        error_report("vresearch101: cannot read ROM '%s': %s", fname, err->message);
         exit(1);
     }
+    if (len > memmap[VR_FIRMWARE].size) {
+        error_report("vresearch101: ROM '%s' is too big (%zu > %" PRIu64 ")", fname, len, (uint64_t)memmap[VR_FIRMWARE].size);
+        exit(1);
+    }
+    uint8_t *rom = memory_region_get_ram_ptr(&vms->fw_mr);
+    memcpy(rom, contents, len);
+
+    /*
+     * Bypass IM4M manifest & signature enforcement in AVPBooter:
+     * At 0x101640: tbz w8, #0, 0x1016f4 (0x360005a8)
+     * Replacing with: b 0x101850 (0x14000084)
+     * This skips the online TSS IM4M certificate & digest validation
+     * and jumps directly to IM4P payload extraction and LZFSE decompression,
+     * allowing local firmware stages (LLB) to be verified and executed.
+     */
+    uint32_t *p_insn = (uint32_t *)(rom + (0x101640 - 0x100000));
+    fprintf(stderr, "vresearch101: loaded ROM '%s' (%zu bytes), insn @ 0x101640 = 0x%08x\n", fname, len, *p_insn);
+    if (*p_insn == 0x360005a8) {
+        fprintf(stderr, "vresearch101: patching AVPBooter IM4M check at 0x101640 -> b 0x101850 (0x14000084)\n");
+        *p_insn = 0x14000084;
+    }
+
     memory_region_add_subregion(get_system_memory(), memmap[VR_FIRMWARE].base,
                                 &vms->fw_mr);
 }
