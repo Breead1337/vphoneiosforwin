@@ -264,3 +264,12 @@ event loop (период 78 TB, 3.85 млн TB за 4 секунды) между
 4. Результат: грузятся sep-firmware, devicetree, root_hash, trustcache, SPTM/TXM, kernelcache; iBoot печатает
    `======== End of iBoot serial output. ========`. Дальше в логе: `write access to unsupported AArch64 system register
    op0:3 op1:6 crn:15 crm:1 op2:0` (S3_6_C15_C1_0) — следующий барьер уже в SPTM/ядре, на модели CPU apple-gxf.
+
+## Обновление 17.09 (18) — после iBoot: SPTM стартует, Apple-sysreg'и
+1. CPU apple-gxf не имел GXF/SPRR-регистров (они в Inferno только у A13). В overlay vresearch101.c на наш CPU
+   навешиваются `apple_a13_init_gxf` (до realize) и `apple_a13_init_gxf_override` (после) — используют лишь ARMCPU.
+2. Перепись MRS/MSR (CRn 11/15) в sptm/txm/kernelcache: ~40 регистров. Главное: у этого поколения банк GL1
+   (SP/TPIDR/VBAR/SPSR/ASPSR/ESR/ELR/FAR_GL1) = S3_6_C15_C10_x, а в A13-модели Inferno он на C9_x (+ASPSR C8_3) —
+   добавлены алиасы C10->C9 (та же память, ARM_CP_ALIAS). APSTS_EL1 (S3_6_C15_C12_4, бит0 MKeyVld — SPTM крутит
+   цикл до установки) = const 1. Остальные (HID4, LLC_ERR_*, S3_4_C15_C10_0..3, CPU_OVRD, …) — RAZ/WI-стабы.
+3. Unsupported-sysreg ошибок больше нет; в логе после iBoot: чтения avp-rtc +0x40 и avp-ctrr +0x0 (unimplemented).

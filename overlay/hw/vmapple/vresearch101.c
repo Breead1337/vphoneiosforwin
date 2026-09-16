@@ -30,10 +30,12 @@
 #include "hw/usb/hcd-xhci-pci.h"
 #include "hw/virtio/virtio-pci.h"
 #include "hw/vmapple/vmapple.h"
+#include "hw/arm/apple-silicon/a13_gxf.h"
 #include "net/net.h"
 #include "qapi/error.h"
 #include "qobject/qlist.h"
 #include "cpu.h"
+#include "target/arm/cpregs.h"
 #include "system/reset.h"
 #include "system/runstate.h"
 #include "system/system.h"
@@ -267,6 +269,78 @@ static void vr_reset(void *opaque)
     cpu_set_pc(first_cpu, memmap[VR_FIRMWARE].base);
 }
 
+/*
+ * Apple implementation sysregs used by SPTM/TXM/kernel of vresearch101 (census: MRS/MSR with CRn 11/15 in the
+ * images) that the apple-gxf CPU lacks. Newer cores keep the GL1 banked registers at S3_6_C15_C10_x; Inferno's A13
+ * model has them at C9_x, so alias C10 onto the same storage. The rest read as zero, writes ignored.
+ * ponytail: RAZ/WI stubs; give a register real storage once a guest reads back what it wrote.
+ */
+static void vr_cpreg_stub(ARMCPU *cpu, uint8_t op1, uint8_t crn, uint8_t crm, uint8_t op2, uint64_t val)
+{
+    uint32_t key = ENCODE_AA64_CP_REG(CP_REG_ARM64_SYSREG_CP, crn, crm, 3, op1, op2);
+    ARMCPRegInfo r = {
+        .name = g_strdup_printf("VR_S3_%u_C%u_C%u_%u", op1, crn, crm, op2),
+        .state = ARM_CP_STATE_AA64, .opc0 = 3, .opc1 = op1, .crn = crn, .crm = crm, .opc2 = op2,
+        .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = val,
+    };
+
+    if (!ARMCPRegTable_cget(cpu->cp_regs, key)) {
+        define_one_arm_cp_reg(cpu, &r);
+    }
+}
+
+static void vr_apple_cpregs(ARMCPU *cpu)
+{
+    static const uint8_t gl1[][2] = { /* C10 op2 -> C9 op2 (A13), ASPSR_GL1 is C8_3 there */
+        { 0, 0 }, { 1, 1 }, { 2, 2 }, { 3, 3 }, { 5, 5 }, { 6, 6 }, { 7, 7 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(gl1); i++) {
+        const ARMCPRegInfo *ri = ARMCPRegTable_cget(
+            cpu->cp_regs, ENCODE_AA64_CP_REG(CP_REG_ARM64_SYSREG_CP, 15, 9, 3, 6, gl1[i][1]));
+        ARMCPRegInfo r;
+
+        if (!ri) {
+            continue;
+        }
+        r = *ri;
+        r.name = g_strdup_printf("%s_C10", ri->name);
+        r.crm = 10;
+        r.opc2 = gl1[i][0];
+        r.type |= ARM_CP_ALIAS;
+        define_one_arm_cp_reg(cpu, &r);
+    }
+    {
+        const ARMCPRegInfo *ri = ARMCPRegTable_cget(
+            cpu->cp_regs, ENCODE_AA64_CP_REG(CP_REG_ARM64_SYSREG_CP, 15, 8, 3, 6, 3));
+        if (ri) {
+            ARMCPRegInfo r = *ri;
+            r.name = "ASPSR_GL1_C10";
+            r.crm = 10;
+            r.opc2 = 4;
+            r.type |= ARM_CP_ALIAS;
+            define_one_arm_cp_reg(cpu, &r);
+        }
+    }
+
+    vr_cpreg_stub(cpu, 6, 15, 12, 4, 1); /* APSTS_EL1: MKeyVld (Inferno only has it in APCTL) */
+    vr_cpreg_stub(cpu, 0, 15, 4, 0, 0);  /* HID4 */
+    vr_cpreg_stub(cpu, 1, 11, 8, 1, 0);
+    vr_cpreg_stub(cpu, 3, 15, 0, 0, 0);
+    vr_cpreg_stub(cpu, 3, 15, 8, 0, 0);  /* LLC_ERR_STS */
+    vr_cpreg_stub(cpu, 3, 15, 9, 0, 0);  /* LLC_ERR_ADR */
+    vr_cpreg_stub(cpu, 3, 15, 10, 0, 0); /* LLC_ERR_INF */
+    vr_cpreg_stub(cpu, 4, 15, 0, 0, 0);
+    for (uint8_t op2 = 0; op2 < 4; op2++) {
+        vr_cpreg_stub(cpu, 4, 15, 10, op2, 0);
+    }
+    vr_cpreg_stub(cpu, 5, 15, 2, 6, 0);
+    vr_cpreg_stub(cpu, 5, 15, 5, 0, 0);  /* CPU_OVRD */
+    vr_cpreg_stub(cpu, 6, 15, 0, 0, 0);
+    vr_cpreg_stub(cpu, 6, 15, 0, 2, 0);
+    vr_cpreg_stub(cpu, 6, 15, 1, 3, 0);
+}
+
 static void vr_init(MachineState *machine)
 {
     VResearchMachineState *vms = VRESEARCH_MACHINE(machine);
@@ -292,7 +366,15 @@ static void vr_init(MachineState *machine)
             object_property_set_bool(cpu, "start-powered-off", true, &error_fatal);
         }
         object_property_set_link(cpu, "memory", OBJECT(sysmem), &error_abort);
+        /*
+         * SPTM runs in GXF and programs SPRR/GXF sysregs (first: S3_6_C15_C1_0 SPRR_CONFIG_EL1).
+         * Inferno defines them only for its A13 CPU; they touch nothing but the ARMCPU parent
+         * (first member of AppleA13State), so register the same sets on our apple-gxf CPU.
+         */
+        apple_a13_init_gxf((AppleA13State *)cpu);
         qdev_realize(DEVICE(cpu), NULL, &error_fatal);
+        apple_a13_init_gxf_override((AppleA13State *)cpu);
+        vr_apple_cpregs(ARM_CPU(cpu));
         object_unref(cpu);
     }
 
