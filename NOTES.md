@@ -250,3 +250,17 @@ event loop (период 78 TB, 3.85 млн TB за 4 секунды) между
    `/<nsih>/System/Library/Caches/com.apple.kernelcaches/kernelcache`. Стейджер: `tools/mkpreboot.py`.
 4. Писать файлы в APFS из Linux: собираю linux-apfs-rw под ядро WSL (`tools/build_apfs_module.sh`, MODVERSIONS ->
    нужна полная сборка ядра msft 6.6.87.2 ради Module.symvers).
+
+## Обновление 16.09 (17) — iBoot ОТРАБОТАЛ ДО КОНЦА: «End of iBoot serial output», передача управления дальше
+1. Запись файлов в APFS из WSL: собран linux-apfs-rw (`tools/build_apfs_module.sh`: исходники ядра msft 6.6.87.2,
+   `make vmlinux` -> vmlinux.symvers как Module.symvers, genver.sh). Модуль грузится `insmod` от root
+   (`wsl -u root`; после перезапуска WSL — заново, mkroot.sh делает сам).
+2. `tools/apfsprogs_multivol.py` патчит mkapfs: ДВА тома — 0 «Preboot» (role 0x10, монтируется в /boot),
+   1 «System» (role 0x1). apfsck чистый. Без System iBoot падал в FUN_700a63a0 (-> FUN_700a2a74 role 1, лог 3b9107…:207).
+3. Патчи LLB (`tools/mkaux.py`, LLB_PATCHES, несжатый IM4P — AVPBooter такой принимает):
+   - 0x70074348 tbz -> b 0x70074770: нет IM4M (0x40040007) -> сразу извлечение payload (аналог AVPBooter 0x101640);
+   - rootfs 4a–4e + panic bypass по якорям из vphone-cli `research/iboot_patches.md` (там 26.3, у нас 26.4 — VA другие):
+     0x700a2a1c, 0x700a26f0, 0x700a2a64, 0x700a6608, 0x700a67c8, 0x7008635c.
+4. Результат: грузятся sep-firmware, devicetree, root_hash, trustcache, SPTM/TXM, kernelcache; iBoot печатает
+   `======== End of iBoot serial output. ========`. Дальше в логе: `write access to unsupported AArch64 system register
+   op0:3 op1:6 crn:15 crm:1 op2:0` (S3_6_C15_C1_0) — следующий барьер уже в SPTM/ядре, на модели CPU apple-gxf.
