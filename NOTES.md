@@ -235,3 +235,18 @@ event loop (период 78 TB, 3.85 млн TB за 4 секунды) между
    файл (`ghidra/dump/llb_all.c`, 168k строк, не в git) для грепа хешей `file:line` и констант.
 Дальше — выбор пути к ядру: (А) DFU/recovery по virtio-usb со стороны хоста (iBEC/ramdisk/kernelcache + bootx,
 как idevicerestore в vphone) или (Б) собрать root-диск офлайн (GPT+APFS+Preboot boot objects).
+
+## Обновление 16.09 (16) — root-диск: GPT+APFS принят, Preboot смонтирован, iBoot ищет файлы загрузки
+Метод: gdb-multiarch на gdbstub QEMU (`tools/gdbrun.sh cmds.gdb`, hbreak — VA LLB = 0x7006c000+). Результаты:
+1. fsboot монтирует устройство `roota` (NVRAM boot-device `root` + раздел 'a', формат `%s%c`) через IPC fs-сервиса
+   (FUN_70096008 -> FUN_700a607c). Нужен GPT (раздел APFS 7C3457EF-…); без GPT было 40060001.
+2. APFS-драйвер: FUN_700a607c выбирает том ПО РОЛИ (FUN_700a2a74, apfs_role +0x3c4) — для /boot запрашивается
+   role=0x10 (Preboot); по имени (FUN_700a23f8/FUN_700a2230) ищется том «Update» (upgrade-путь).
+   `tools/mkroot.sh` = sgdisk + mkapfs (apfsprogs) + `tools/apfs_role.py` (роль в APSB + fletcher64) -> 40060003 ушла.
+3. Сейчас breadcrumbs `20012 40060004 40030016`: открывается `/boot/active` (нет файла), затем
+   `/boot/<active>/usr/standalone/firmware/sep-firmware.img4` (40030016 = загрузка 'sepi' в FUN_700c4cbc).
+   Раскладка Preboot: `/active` = 96 hex nsih; `/<nsih>/usr/standalone/firmware/{sep-firmware,devicetree,root_hash}.img4`,
+   `FUD/{StaticTrustCache,Ap,SecurePageTableMonitor,Ap,TrustedExecutionMonitor}.img4`,
+   `/<nsih>/System/Library/Caches/com.apple.kernelcaches/kernelcache`. Стейджер: `tools/mkpreboot.py`.
+4. Писать файлы в APFS из Linux: собираю linux-apfs-rw под ядро WSL (`tools/build_apfs_module.sh`, MODVERSIONS ->
+   нужна полная сборка ядра msft 6.6.87.2 ради Module.symvers).

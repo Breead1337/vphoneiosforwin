@@ -21,15 +21,16 @@ def img4(im4p):
     return b"\x30" + der_len(len(body)) + body
 
 
-out = sys.argv[1]
-ALIGN = int(sys.argv[2]) if len(sys.argv) > 2 else 1  # LLB reads the next header right at off+len
-size = 128 << 20
-buf = bytearray(size)
-off = 0
-for p in IMAGES:
-    c = img4(open(p, "rb").read())
-    assert off + len(c) < 0xa00000, "images overlap NVRAM"
-    buf[off:off + len(c)] = c
-    print(f"{p.split('/')[-1]} tag={c[c.find(b'IM4P') + 6:c.find(b'IM4P') + 10]} @ {off:#x} len {len(c):#x}")
-    off = (off + len(c) + ALIGN - 1) & -ALIGN
-open(out, "wb").write(buf)
+if __name__ == "__main__":
+    out = sys.argv[1]
+    ALIGN = int(sys.argv[2]) if len(sys.argv) > 2 else 1  # LLB reads the next header right at off+len
+    size = 128 << 20
+    buf = bytearray(size)
+    off = 0
+    for p in IMAGES:
+        c = img4(open(p, "rb").read())
+        assert off + len(c) < 0xa00000, "images overlap NVRAM"
+        buf[off:off + len(c)] = c
+        print(f"{p.split('/')[-1]} tag={c[c.find(b'IM4P') + 6:c.find(b'IM4P') + 10]} @ {off:#x} len {len(c):#x}")
+        off = (off + len(c) + ALIGN - 1) & -ALIGN
+    open(out, "wb").write(buf)
