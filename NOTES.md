@@ -219,3 +219,19 @@ event loop (период 78 TB, 3.85 млн TB за 4 секунды) между
 
      Entering recovery mode, starting command prompt
      ```
+
+## Обновление 16.09 (15) — iBoot (ibot) в хранилище образов aux; настоящий барьер = пустой root-диск
+1. aux.img теперь собирается скриптом `tools/mkaux.py` (раньше руками). Сканер образов LLB берёт IMG4-контейнеры
+   ПОДРЯД БЕЗ ВЫРАВНИВАНИЯ: следующий заголовок читается ровно с off+len предыдущего (по 512 байт не ровнять —
+   при 0x5b800 ibot не находился). Сейчас: `illb @0x0 len 0x5b7f5`, `ibot @0x5b7f5 len 0x5cd23` — оба в списке
+   образов, и 9 повторов `d77fec40d6d8952:1215` исчезли.
+2. LLB этой сборки = «Microkernel iBoot» целиком: boot-список `fsboot` (FUN_7006c994) сам монтирует диск и грузит
+   `krnl` (0x6b726e6c). Breadcrumbs NVRAM: `<BOOT> 20022 <COMMIT> 401f0201 20028(1) 20012 40060001 40060001`.
+   40060001 = FUN_7006d7cc («/boot», tc-path): FUN_700e07d0 не нашёл раздел, потому что disk.img пустой
+   (ни GPT, ни APFS). Ibot тут, скорее всего, вообще не нужен — нужна установленная система (как после restore в vphone).
+3. Консоль recovery по UART ввод не принимает (help/printenv без ответа, `tools/prompt.sh`), в RELEASE команды идут
+   по USB.
+4. Инструменты: Ghidra-проект `llb` (база 0x7006c000), `ghidra_scripts/DecompAll.java` — полная декомпиляция в один
+   файл (`ghidra/dump/llb_all.c`, 168k строк, не в git) для грепа хешей `file:line` и констант.
+Дальше — выбор пути к ядру: (А) DFU/recovery по virtio-usb со стороны хоста (iBEC/ramdisk/kernelcache + bootx,
+как idevicerestore в vphone) или (Б) собрать root-диск офлайн (GPT+APFS+Preboot boot objects).
