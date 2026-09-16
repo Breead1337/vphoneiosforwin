@@ -130,6 +130,13 @@ static void sep_handle_request(VRSepMboxState *s, uint64_t req)
                  * vary it by tag so the nonce isn't a constant run.
                  */
                 data = 0xA5A50000u | tag;
+            } else if (op == 16) {
+                /*
+                 * OP 16 (0x10): AVPBooter FUN_00103788 calls op 16 twice to read
+                 * a 64-bit status/cookie (lower 32-bit then upper 32-bit).
+                 * If the combined 64-bit value is zero, it panics at 0x10380c.
+                 */
+                data = 0x10000 | (tag ? tag : 1);
             }
             resp = MSG_MK(ep, tag, op + 100, 0, data);
         }

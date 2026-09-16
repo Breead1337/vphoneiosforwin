@@ -203,10 +203,17 @@ static void vblk_cmd(uint64_t devid, BlockBackend *blk, uint64_t gp_addr,
         }
         break;
     case VBLK_DATA_FLAGS_WRITE:
+        dma_result = dma_memory_read(&address_space_memory, req.data.addr, buf,
+                                     req.data.len, MEMTXATTRS_UNSPECIFIED);
+        if (dma_result != MEMTX_OK) {
+            goto out;
+        }
         r = blk_pwrite(blk, off, req.data.len, buf, 0);
         qemu_log_mask(LOG_UNIMP, "bdif vblk_write: %s addr=%#" PRIx64 " off=%#" PRIx64 " len=%u r=%d\n",
                       devid == DEVID_AUX ? "aux" : "root", req.data.addr, off, req.data.len, r);
-        ret = VBLK_RET_SUCCESS;
+        if (r >= 0) {
+            ret = VBLK_RET_SUCCESS;
+        }
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "bdif vblk unknown flags=%#x\n", req.data.flags);
@@ -296,10 +303,29 @@ static const Property bdif_properties[] = {
     DEFINE_PROP_DRIVE("root", VMAppleBdifState, root),
 };
 
+static void bdif_realize(DeviceState *dev, Error **errp)
+{
+    VMAppleBdifState *s = VMAPPLE_BDIF(dev);
+
+    if (s->aux) {
+        if (blk_set_perm(s->aux, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                         BLK_PERM_ALL, errp) < 0) {
+            return;
+        }
+    }
+    if (s->root) {
+        if (blk_set_perm(s->root, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                         BLK_PERM_ALL, errp) < 0) {
+            return;
+        }
+    }
+}
+
 static void bdif_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->realize = bdif_realize;
     dc->desc = "VMApple Backdoor Interface";
     device_class_set_props(dc, bdif_properties);
 }
