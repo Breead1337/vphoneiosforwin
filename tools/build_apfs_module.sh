@@ -8,4 +8,5 @@ cd linux
 [ -f .config ] || { zcat /proc/config.gz > .config; make olddefconfig >/dev/null; }
 [ -f Module.symvers ] || nice make -j12 vmlinux modules_prepare > ../kernel.log 2>&1
 cd ..; [ -d apfs ] || git clone -q --depth 1 https://github.com/linux-apfs/linux-apfs-rw apfs
-make -C linux M=$PWD/apfs modules > apfs.log 2>&1 && ls -la apfs/apfs.ko
+cp -n linux/vmlinux.symvers linux/Module.symvers
+(cd apfs && ./genver.sh) && make -C linux M=$PWD/apfs modules > apfs.log 2>&1 && ls -la apfs/apfs.ko
