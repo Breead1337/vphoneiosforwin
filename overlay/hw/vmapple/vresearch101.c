@@ -68,8 +68,8 @@ enum {
 /* From DeviceTree.vresearch101ap: arm-io child 0 -> parent 0x10000000 */
 static const MemMapEntry memmap[] = {
     [VR_FIRMWARE] =   { 0x00100000, 0x00100000 },
-    [VR_CONFIG] =     { 0x00400000, 0x00010000 },
-    [VR_PMUSRAM] =    { 0x00600000, 0x00010000 },
+    [VR_CONFIG] =     { 0x00400000, 0x00200000 },
+    [VR_PMUSRAM] =    { 0x00600000, 0x00020000 },
     [VR_GIC_DIST] =   { 0x10000000, 0x00010000 },
     [VR_GIC_REDIST] = { 0x10010000, 0x00400000 },
     [VR_UART] =       { 0x20010000, 0x00010000 },
