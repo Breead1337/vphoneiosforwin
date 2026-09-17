@@ -1090,6 +1090,11 @@ static void gen_exception_bkpt_insn(DisasContext *s, uint32_t syn)
 
 void unallocated_encoding(DisasContext *s)
 {
+    /* vresearch101 debug: surface the raw word so Apple-specific ops can be identified */
+    if (qemu_loglevel_mask(LOG_GUEST_ERROR)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "udef: pc=0x%" PRIx64 " insn=0x%08x\n",
+                      (uint64_t)s->pc_curr, s->insn);
+    }
     /* Unallocated and reserved encodings are uncategorized */
     gen_exception_insn(s, 0, EXCP_UDEF, syn_uncategorized());
 }

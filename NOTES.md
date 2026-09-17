@@ -305,3 +305,20 @@ QEMU по строке UART, RING=k — контекст до события). �
    чем в pte_to_sprr_prot_is_guarded (A13). Ниббли EL1-perm по индексам: [0]=6 [1]=e [2]=a [3]=b [4]=a [5]=2
    [6]=0 [7]=3 [8]=a [9]=2 [10]=5 [11]=a [12]=0 [13]=2 [14]=0 [15]=2. Следующий шаг: снять из TXM/SPTM реальную
    семантику ниббла (или из VZ VirtualMachine), поправить декодер SPRR под vresearch101.
+
+## Обновление 17.09 (21) — таблица прав SPRR выведена эмпирически; барьер = Apple PAC (blraa)
+1. МЕТОД (безопасно, без угадывания security-логики): режим SPRR-learn в overlay/target/arm/ptw.c — SPRR временно
+   разрешает всё и логирует пары (guarded, ниббл, тип доступа); XNU корректен => любой его доступ легален на железе.
+   Включается VR_SPRR_LEARN=1 + -d guest_errors. Union по нибблам дал таблицу.
+2. РЕЗУЛЬТАТ: guarded-половина A13 совпала точно (hi 2 бита: 1->R+X, 2->RO, 3->R+W). Ошибочна non-guarded:
+   для vresearch101 (мл. 2 бита): 1->R+W+X, 2->R+W, 3->R+W (у A13 было 1->RX,2->R — отсюда data abort на запись
+   в стек XNU). Правка в pte_to_sprr_prot_is_guarded. ponytail: EL0/EL1 слиты (over-grant), для загрузки безопасно.
+3. Цикл data-abort на запись ушёл; XNU исполняется дальше (миллионы TB) и упирается в PAC:
+   slide=0x39220000, место вызова `mov x17,#0xae56; blraa x21,x17` @ несл. 0xfffffe0008ad46b4
+   (рантайм LR 0x...41cf46b8). Аутентиф. цель = несл. 0x92d5324 (сразу за __TEXT_EXEC, в нулях) -> прыжок на
+   insn=0 -> Undefined. x16=0x2d x17=0xa98 на входе в udef. Инструменты: лог `udef`/`udef@entry` (translate.c,
+   helper.c), `sprrlearn` (ptw.c) — все под -d guest_errors.
+4. СЛЕДУЮЩЕЕ: Apple PAC. Проверить, что sign/auth в Inferno самосогласованы для Apple-режима (APCTL AppleMode,
+   ключи apib/apda/kernelkey из SPTM); вероятно указатель подписан не тем ключом/модификатором, либо наши
+   стабы APSTS/APCTL сломали ключевую логику. Быстрый тест: сделать auth strip-only (не поизонить) и посмотреть,
+   идёт ли XNU дальше — локализует, PAC ли это. Ориентир функции вызова: несл. 0xfffffe0008ad46xx (kernelcache).

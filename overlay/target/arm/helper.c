@@ -8607,6 +8607,18 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
     unsigned int new_mode = aarch64_pstate_mode(new_el, true);
     unsigned int old_mode;
     unsigned int cur_el = arm_current_el(env);
+
+    /* vresearch101 debug: first-time context for undefined-instruction traps (Apple op vs bad jump) */
+    if (cs->exception_index == EXCP_UDEF && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
+        static int once;
+        if (once++ < 8) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "udef@entry pc=0x%" PRIx64 " lr=0x%" PRIx64 " x16=0x%" PRIx64
+                          " x17=0x%" PRIx64 " el=%d g=%d\n",
+                          env->pc, env->xregs[30], env->xregs[16], env->xregs[17],
+                          cur_el, arm_is_guarded(env));
+        }
+    }
     int rt;
 
     if (arm_is_guarded(env)) {

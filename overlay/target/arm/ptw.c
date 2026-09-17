@@ -1060,25 +1060,22 @@ pte_to_sprr_prot_is_guarded(CPUARMState *env, int ap, int xn, int pxn, bool guar
             assert_not_reached();
         }
     } else {
+        /*
+         * vresearch101 non-guarded (EL0/EL1) SPRR decode. Derived empirically (SPRR-learn) for this core
+         * generation; differs from A13 (whose lo=1->RX, lo=2->R was wrong here). Guarded half above matches A13.
+         * ponytail: EL0/EL1 are lumped, so lo=1 shows as RWX where HW likely splits EL1-RW / EL0-RX; harmless
+         * over-grant for booting, tighten if a W^X or user/kernel check ever depends on it.
+         */
         switch (attr & 3) {
         case 0:
             prot = 0;
             break;
         case 1:
-            prot = PAGE_READ | PAGE_EXEC;
-            if ((attr >> 2) == 2) {
-                prot = PAGE_EXEC;
-            }
+            prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
             break;
         case 2:
-            prot = PAGE_READ;
-            break;
         case 3:
             prot = PAGE_READ | PAGE_WRITE;
-            if ((attr >> 2) == 1) {
-                /* No R/W in EL if RX in GXF */
-                prot = 0;
-            }
             break;
         default:
             assert_not_reached();
@@ -2223,6 +2220,7 @@ static bool get_phys_addr_lpae(CPUARMState *env, S1Translate *ptw,
         }
 
         user_rw = simple_ap_to_rw_prot_is_user(ap, true);
+        int vr_sprr_idx = ((ap << 2) | (xn << 1) | pxn) & 0xf; /* before xn/pxn get clobbered below */
         if (arm_is_sprr_enabled(env)) {
             prot_rw = pte_to_sprr_prot(env, ap, xn, pxn) & (PAGE_READ | PAGE_WRITE);
             xn = pxn = !(pte_to_sprr_prot(env, ap, xn, pxn) & PAGE_EXEC);
@@ -2236,11 +2234,24 @@ static bool get_phys_addr_lpae(CPUARMState *env, S1Translate *ptw,
          */
         result->f.prot = get_S1prot(env, mmu_idx, aarch64, user_rw, prot_rw,
                                     xn, pxn, result->f.attrs.space, out_space);
-        if (qemu_loglevel_mask(LOG_GUEST_ERROR) && !(result->f.prot & (1 << access_type))) {
-            qemu_log_mask(LOG_GUEST_ERROR, "permfault: va=0x%" PRIx64 " acc=%d el=%d g=%d ap=%d uxn=%d pxn=%d "
-                          "user_rw=%d prot_rw=%d prot=%d attrs=0x%" PRIx64 "\n", (uint64_t)address, access_type,
-                          arm_current_el(env), arm_is_guarded(env), ap, (int)extract64(attrs, 54, 1),
-                          (int)extract64(attrs, 53, 1), user_rw, prot_rw, result->f.prot, attrs);
+        /*
+         * vresearch101 SPRR-learn mode (-d guest_errors): the A13 nibble->RWX table is wrong for this
+         * core gen. XNU is correct, so every access it makes is HW-legal: grant it and record which
+         * access bits each (guarded, nibble) allows. Union over a run = the real permission table.
+         */
+        if (arm_is_sprr_enabled(env) && getenv("VR_SPRR_LEARN") && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
+            static uint8_t seen[2][16]; /* [guarded][nibble] -> bitmask of access types */
+            int g = arm_is_guarded(env);
+            int el2 = arm_current_el(env);
+            int idx = vr_sprr_idx;
+            int nib = SPRR_EXTRACT_IDX_ATTR(env->sprr.sprr_el_br_el1[el2][el2], idx);
+            int bit = 1 << access_type;
+            if (!(seen[g][nib] & bit)) {
+                seen[g][nib] |= bit;
+                qemu_log_mask(LOG_GUEST_ERROR, "sprrlearn g=%d nib=0x%x acc=%d idx=%d -> seen=0x%x\n",
+                              g, nib, access_type, idx, seen[g][nib]);
+            }
+            result->f.prot |= bit; /* permissive while learning */
         }
 
         if (access_type == MMU_INST_FETCH) {
