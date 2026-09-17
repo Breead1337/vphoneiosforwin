@@ -338,3 +338,14 @@ QEMU по строке UART, RING=k — контекст до события). �
 Это отдельная крупная под-задача (провенанс PAC/arm64e fixups). Всё рабочее закоммичено (SPRR, GL0). Дизасм-хелпер:
 tools/disa.py (capstone, skipdata). Ключевые несл. адреса: caller 0x...08ad4634, blraa 0x...08ad46b4, slide в тот
 прогон 0x39220000 (меняется).
+
+## Обновление 17.09 (23) — PAC-крипта НИ ПРИ ЧЁМ: Apple-PAC в прогоне выключен
+Инструментировали pauth_auth (лог `pacauth` для ключей инструкций на EL>0). За полный прогон — НОЛЬ срабатываний.
+Значит `blraa x21,x17` не проходит через auth: PAC инструкций выключен (pauth_key_enabled=false — APCTL.AppleMode
+и SCTLR.EnIA не выставлены), и blraa прыгает на СЫРОЙ x21 = 0xfffffe00424f5324 (уже неверный, за образом).
+ВЫВОД: барьер не в алгоритме PAC, а в том, что arm64e-указатели (chained fixups / подписи), которые ДОЛЖНЫ
+были сформировать x21, не отработали, потому что Apple-PAC не включён. Следующий шаг сессии (в будущем):
+  1) проверить, кто/когда должен выставить APCTL.AppleMode (+ ключи apia/apib/apda/kernelkey уже пишутся SPTM);
+  2) включить Apple-режим PAC согласованно и убедиться, что sign(pacia)+auth(blraa) XNU round-trip'ятся;
+  3) если часть указателей baked (chained fixups с diversity) — проверить их применение iBoot/XNU.
+Диагностика (под -d guest_errors): `pacauth` (pauth_helper.c), `udef`/`udef@entry`, `sprrlearn`, `permfault`.
