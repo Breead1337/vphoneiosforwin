@@ -285,3 +285,23 @@ event loop (период 78 TB, 3.85 млн TB за 4 секунды) между
    (разобрать eret/SPSR на 0x…4cd88).
 Инструменты: `tools/extrace.sh` (-d int с ограничением размера), `tools/latelog.sh` (лог включается через монитор
 QEMU по строке UART, RING=k — контекст до события). ВАЖНО: `-d int` целиком даёт гигабайты за минуту.
+
+## Обновление 17.09 (20) — GL0 (TXM) реализован; барьер = таблица декодирования SPRR нового поколения
+1. GXF в Inferno был бинарным (EL или GL1). Реально SPTM живёт в GL1, а TXM — в GL0. Добавлен MMU-индекс
+   ARMMMUIdx_GE10_0 и переходы уровней защиты в overlay/target/arm:
+   - helper.c arm_cpu_do_interrupt_aarch64: исключение из GL остаётся в GL (GL0->GL1 при росте EL);
+   - tcg/helper-a64.c exception_return: ERET внутри GXF опускает на уровень ниже (SPTM GL1 -> TXM GL0),
+     выход из GXF — только через GEXIT;
+   - arm_is_guarded больше не требует el>0 (GL0 существует); arm_is_sprr_enabled берёт SPRR_CONFIG_EL1 для всего
+     режима EL1&0 (MAX(el,1)); всюду добавлен case GE10_0. Скопированы target/arm/{cpu.h,internals.h,ptw.c,helper.c,
+     tcg/{translate,tlb-insns,cpregs-at,helper-a64}.c} в overlay (правились).
+2. Результат: GENTER/GEXIT и ERET между GL1/GL0/EL1 ходят корректно, TXM (__TEXT_EXEC 0xfffffff017020000, entry
+   0x...68000) и XNU крутятся. Гигантский прогон (миллионы TB в 3 функциях XNU).
+3. НОВЫЙ барьер: бесконечные Data Abort (ESR 0x25/9600004f, WnR) на EL1 (g=0) — XNU ПИШЕТ в страницы, а SPRR
+   отдаёт их как R+X. Инструмент: лог `sprr EL%d/GL%d: ap.. idx.. perm.. attr` и `permfault: va.. prot..` в
+   overlay/target/arm/ptw.c (под -d guest_errors). Данные: EL1 perm-регистр = 0x2020a52a302abae6, страница стека
+   ap=2 xn=1 pxn=0 -> sprr_idx=10 -> ниббл 5 -> декодер A13 даёт R|X, а XNU нужен R|W.
+   ВЫВОД: у этого поколения ядра иная таблица ниббл SPRR -> RWX (или иная раскладка bank BR0/BR1 C1_6 vs C3_0),
+   чем в pte_to_sprr_prot_is_guarded (A13). Ниббли EL1-perm по индексам: [0]=6 [1]=e [2]=a [3]=b [4]=a [5]=2
+   [6]=0 [7]=3 [8]=a [9]=2 [10]=5 [11]=a [12]=0 [13]=2 [14]=0 [15]=2. Следующий шаг: снять из TXM/SPTM реальную
+   семантику ниббла (или из VZ VirtualMachine), поправить декодер SPRR под vresearch101.
