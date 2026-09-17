@@ -36,6 +36,7 @@
 #include "qobject/qlist.h"
 #include "cpu.h"
 #include "target/arm/cpregs.h"
+#include "exec/cputlb.h"
 #include "system/reset.h"
 #include "system/runstate.h"
 #include "system/system.h"
@@ -271,8 +272,7 @@ static void vr_reset(void *opaque)
 
 /*
  * Apple implementation sysregs used by SPTM/TXM/kernel of vresearch101 (census: MRS/MSR with CRn 11/15 in the
- * images) that the apple-gxf CPU lacks. Newer cores keep the GL1 banked registers at S3_6_C15_C10_x; Inferno's A13
- * model has them at C9_x, so alias C10 onto the same storage. The rest read as zero, writes ignored.
+ * images) that the apple-gxf CPU lacks. The rest read as zero, writes ignored.
  * ponytail: RAZ/WI stubs; give a register real storage once a guest reads back what it wrote.
  */
 static void vr_cpreg_stub(ARMCPU *cpu, uint8_t op1, uint8_t crn, uint8_t crm, uint8_t op2, uint64_t val)
@@ -289,40 +289,44 @@ static void vr_cpreg_stub(ARMCPU *cpu, uint8_t op1, uint8_t crn, uint8_t crm, ui
     }
 }
 
+static void vr_sprr_perm_write(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
+{
+    raw_write(env, ri, value);
+    tlb_flush(env_cpu(env));
+}
+
+/*
+ * SPRR layout of this core generation (SPTM: msr S3_6_C15_C1_6 = EL1 perms, then reads it back and hangs on
+ * mismatch; C1_5 = EL0 perms): Inferno's A13 walker takes EL1 perms from sprr_el_br_el1[1][1] (its C3_0), so point
+ * C1_6 there and park C3_0 (only a get/set accessor pair in SPTM) on the otherwise unused [1][0].
+ */
+static const ARMCPRegInfo vr_sprr_override_reginfo[] = {
+    { .name = "SPRR_PERM_EL1", .state = ARM_CP_STATE_AA64,
+      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 1, .opc2 = 6,
+      .access = PL1_RW, .type = ARM_CP_OVERRIDE,
+      .readfn = raw_read, .writefn = vr_sprr_perm_write, .raw_writefn = raw_write,
+      .fieldoffset = offsetof(CPUARMState, sprr.sprr_el_br_el1[1][1]) },
+    { .name = "SPRR_S3_6_C15_C3_0", .state = ARM_CP_STATE_AA64,
+      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 3, .opc2 = 0,
+      .access = PL1_RW, .type = ARM_CP_OVERRIDE,
+      .readfn = raw_read, .writefn = raw_write,
+      .fieldoffset = offsetof(CPUARMState, sprr.sprr_el_br_el1[1][0]) },
+};
+
+#define VR_GL1_REG(nm, op2, field) { .name = nm, .state = ARM_CP_STATE_AA64, .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 10, .opc2 = op2, .access = PL1_RW, .fieldoffset = offsetof(CPUARMState, gxf.field[1]) }
+
+/* GL1 banked registers of this core generation live at S3_6_C15_C10_x (A13 model: C9_x) */
+static const ARMCPRegInfo vr_gl1_reginfo[] = {
+    VR_GL1_REG("SP_GL1", 0, sp_gl),       VR_GL1_REG("TPIDR_GL1", 1, tpidr_gl),
+    VR_GL1_REG("VBAR_GL1", 2, vbar_gl),   VR_GL1_REG("SPSR_GL1", 3, spsr_gl),
+    VR_GL1_REG("ASPSR_GL1", 4, aspsr_gl), VR_GL1_REG("ESR_GL1", 5, esr_gl),
+    VR_GL1_REG("ELR_GL1", 6, elr_gl),     VR_GL1_REG("FAR_GL1", 7, far_gl),
+};
+
 static void vr_apple_cpregs(ARMCPU *cpu)
 {
-    static const uint8_t gl1[][2] = { /* C10 op2 -> C9 op2 (A13), ASPSR_GL1 is C8_3 there */
-        { 0, 0 }, { 1, 1 }, { 2, 2 }, { 3, 3 }, { 5, 5 }, { 6, 6 }, { 7, 7 },
-    };
-
-    for (size_t i = 0; i < ARRAY_SIZE(gl1); i++) {
-        const ARMCPRegInfo *ri = ARMCPRegTable_cget(
-            cpu->cp_regs, ENCODE_AA64_CP_REG(CP_REG_ARM64_SYSREG_CP, 15, 9, 3, 6, gl1[i][1]));
-        ARMCPRegInfo r;
-
-        if (!ri) {
-            continue;
-        }
-        r = *ri;
-        r.name = g_strdup_printf("%s_C10", ri->name);
-        r.crm = 10;
-        r.opc2 = gl1[i][0];
-        r.type |= ARM_CP_ALIAS;
-        define_one_arm_cp_reg(cpu, &r);
-    }
-    {
-        const ARMCPRegInfo *ri = ARMCPRegTable_cget(
-            cpu->cp_regs, ENCODE_AA64_CP_REG(CP_REG_ARM64_SYSREG_CP, 15, 8, 3, 6, 3));
-        if (ri) {
-            ARMCPRegInfo r = *ri;
-            r.name = "ASPSR_GL1_C10";
-            r.crm = 10;
-            r.opc2 = 4;
-            r.type |= ARM_CP_ALIAS;
-            define_one_arm_cp_reg(cpu, &r);
-        }
-    }
-
+    define_arm_cp_regs(cpu, vr_gl1_reginfo);
+    define_arm_cp_regs(cpu, vr_sprr_override_reginfo);
     vr_cpreg_stub(cpu, 6, 15, 12, 4, 1); /* APSTS_EL1: MKeyVld (Inferno only has it in APCTL) */
     vr_cpreg_stub(cpu, 0, 15, 4, 0, 0);  /* HID4 */
     vr_cpreg_stub(cpu, 1, 11, 8, 1, 0);

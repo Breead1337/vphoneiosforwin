@@ -273,3 +273,15 @@ event loop (период 78 TB, 3.85 млн TB за 4 секунды) между
    добавлены алиасы C10->C9 (та же память, ARM_CP_ALIAS). APSTS_EL1 (S3_6_C15_C12_4, бит0 MKeyVld — SPTM крутит
    цикл до установки) = const 1. Остальные (HID4, LLC_ERR_*, S3_4_C15_C10_0..3, CPU_OVRD, …) — RAZ/WI-стабы.
 3. Unsupported-sysreg ошибок больше нет; в логе после iBoot: чтения avp-rtc +0x40 и avp-ctrr +0x0 (unimplemented).
+
+## Обновление 17.09 (19) — SPTM вошёл в GL и отработал bootstrap; стоп на переходе в EL0
+1. SPRR этого поколения: S3_6_C15_C1_6 = права EL1 (SPTM пишет 0x2020a52a302abaf5 и зависает, если не прочтёт обратно),
+   C1_5 = EL0. Walker Inferno берёт права EL1 из sprr_el_br_el1[1][1] (у него это C3_0) -> C1_6 переопределён туда
+   (+tlb_flush), C3_0 перенесён на [1][0]. Это сняло Prefetch Abort (FSC 0xF) сразу после включения MMU.
+2. Банк GL1 (C10_x) задан явно через fieldoffset gxf.*_gl[1]: копия A13-записей из таблицы ломалась на
+   bank_fieldoffsets, vbar_gl оставался 0 и исключение в GL уходило на PC 0.
+3. Сейчас: GENTER -> SPTM в GL, CTRR-чтения, большой bootstrap SPTM; потом `Exception return EL1 -> EL0 PC
+   0xfffffe00..18000` и Data Abort из EL0 (запись в данные SPTM). Возврат в EL0 вместо EL1 — следующий барьер
+   (разобрать eret/SPSR на 0x…4cd88).
+Инструменты: `tools/extrace.sh` (-d int с ограничением размера), `tools/latelog.sh` (лог включается через монитор
+QEMU по строке UART, RING=k — контекст до события). ВАЖНО: `-d int` целиком даёт гигабайты за минуту.
