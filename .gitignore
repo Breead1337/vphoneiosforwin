@@ -26,6 +26,7 @@ ghidra/
 
 # Результаты сборки / трассировки:
 work/
+_work/
 build/
 *.log
 !re/*.log
