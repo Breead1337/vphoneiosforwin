@@ -1,4 +1,5 @@
-T=4 STOP=0 bash /mnt/d/vphonewin/tools/trace.sh >/dev/null 2>&1
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+T=4 STOP=0 bash "$DIR/trace.sh" >/dev/null 2>&1
 python3 - <<PY
 import re
 L=open("/root/vrwork/vr.log",errors="ignore").read().splitlines() if False else open(__import__("os").path.expanduser("~/vrwork/vr.log"),errors="ignore").read().splitlines()

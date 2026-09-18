@@ -11,8 +11,11 @@ W=~/vrwork
 : "${EXOUT:=$W/sep_ex.log}"
 : "${N:=800}"
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FW_DIR="${FW_DIR:-$ROOT_DIR/fw}"
+
 timeout "$T" "$Q" -M vresearch101 -smp 1 -m 4G \
-  -bios /mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin \
+  -bios "${BIOS:-$FW_DIR/vz/AVPBooter.vresearch1.bin}" \
   -drive if=pflash,format=raw,file=$W/$AUX \
   -drive if=pflash,format=raw,file=$W/$ROOT \
   -display none -serial file:$W/vr.uart \
