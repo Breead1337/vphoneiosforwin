@@ -378,3 +378,48 @@ tools/disa.py (capstone, skipdata). Ключевые несл. адреса: cal
 tools/w.sh (запуск в WSL без порчи кавычек: base64), tools/xref.py, tools/brto.py, tools/disa.py, tools/monpeek.sh.
 Скрипт прогона: `AUX=aux.test ROOT=root2.img T=300 N=400 SKIP="Guarded Execution|FIQ|Hypervisor|IRQ"
 EXTRA="-cpu apple-gxf,pauth-noop=off,pauth-impdef=on" bash tools/extrace.sh`.
+
+## Обновление 18.09 (25) — _captureiBICKCV разобран, узкое место = IRQ не доходит до XNU
+Резюме сессии (после сбоя диска 12:37 занулён `overlay/target/arm/tcg/translate-a64.c` — 320193 байт NUL,
+и `.git/index` (`bad signature 0x00000000, fatal: index file corrupt`). Индекс пересобран `git read-tree HEAD`.
+Файл сначала восстановил из upstream Inferno (потерял VR_WATCH/VR_NOP/VR_MOV0), потом заметил что 79676a1
+хранит нашу правленую версию (319758 vs upstream 317714) — восстановил `git show HEAD:... > file`. Хуки живы.).
+
+Найдено (kernelcache research, `ipsw macho disass -t com.apple.driver.AppleSEPManager`):
+- **`_captureiBICKCV` @ `0xfffffe0007eaf750`** (unslid). Тело:
+  1. Формирует req word `x20 = 0x001e0100` (op=0x1e=30, tag=1, ep приписывает send-layer в 0xff), `stur x20,[fp,#-0x80]`.
+  2. Вызывает vtable[+0xe8] = `AppleSEPEndpoint::fn_0xe8 @0xfffffe0007ea44ec` (sendMessage).
+  3. `bl 0xfffffe0007eaf610` = waitForMessage(endpoint, timeout=0xf4240=1e6 usec = 1 сек).
+  4. `cbnz w0, thunk_line_0xb9` — если wait вернул !=0, REQUIRE fail `kIOReturnSuccess == result` @ line 0xb9.
+  5. `ldrb w8, [x19, #0xac]; cmp w8, #0x82` — если opcode ответа != 0x82, silent-exit (без паники).
+  6. Цикл 8 раз: `[fp,#-0x80] = 0x001f0100 | (i<<24)`, sendMessage, waitForMessage, expect opcode 0x83
+     (иначе REQUIRE line 0xc1), собирает `[x19,#0xae]` (u32) в буфер по 4 байта — итого 32 байта KCV.
+  7. После цикла CCPost/HMAC-SHA256 через `bl 0xfffffe0007eaf884`.
+- Wait `0xfffffe0007eaf610`: sleep на IOEventSource через vtable[+0x120]/[+0x110] (AppleSEPEndpoint fn_0x120/fn_0x110),
+  просыпается когда `[x19,#0xa9]` бит 0 сброшен ISR'ом на приход сообщения. Флаг [+0xa9] выставляется в 1 sender'ом.
+
+Что делает наш sim: req op=30 приходит (лог `sep-mbox: req ep=0xff tag=0x1 op=30 -> resp op=130`), пишем resp op=0x82,
+пульсим `qemu_irq_pulse(s->irq[0])` (+ теперь `s->irq[1]` для дубля). После этого XNU: пишет 0x208=0, читает 0x1c=0,
+читает 0x14=0x80000000, пишет 0x14=0x80000000 (ack чего-то), читает 0x20=0. **0x100/0x108 не читает — response не забирает.**
+Wait таймаутится (1 сек симы — быстро) → REQUIRE line 0xb9 → panic `_captureiBICKCV`.
+
+**Ключевой факт**: за весь прогон (T=180, 6000 exception cap) в гостя пришло **0 IRQ** exception'ов, только FIQ (336, таймер).
+Т.е. наши `qemu_irq_pulse(irq[0])/irq[1])` не приземляются к XNU. Обвязка вроде правильная:
+DT `sep.interrupts` (base64) = INTID `0x34,0x35` → SPI `0x14,0x15` (комментарий в vresearch101.c: "DT interrupts = SPI + 32"),
+наш `sysbus_connect_irq(sbd,0/1, qdev_get_gpio_in(vms->gic, 0x14/0x15))` — совпадает.
+
+**Гипотезы почему IRQ не летит** (в порядке проверки):
+1. XNU не разрешил SPI 52/53 в GIC dist (не писал ISENABLER бит). Проверить: логировать MMIO writes в диапазон GIC dist
+   (0x1000..0x2000 в GICv3 у нас) вокруг init AppleSEPManager — искать запись 1<<(52-32)=0x100000 в offset 0x104 (SET_ENABLE).
+2. SPTM проглатывает IRQ и не отдаёт EL1 (Guarded Execution домены).
+3. GIC модель Inferno не переправляет edge-triggered SPI (наш `qemu_irq_pulse` = поднять-опустить).
+   Пробовать `qemu_set_irq(irq[0], 1)` + hold, снимать по write ack на 0x14=0x80000000.
+
+Follow-up завершил (при копипасте команд для WSL — memory про Git-Bash /mnt подтвердилась заново):
+- Скрипт `tools/sep_probe.sh` — прогон без дедупа `sep-mbox` строк, разделяет `sep.log` и `sep_ex.log`.
+- Скрипты `scratchpad/run_sep.sh`, `run_sep_noSKIP.sh` (пример как передать SKIP/EXTRA в wsl без ломки кавычек).
+- `vr-sep-mbox.c`: пульс на обеих IRQ линиях (безвредный, ждёт следующей итерации).
+
+RESUME: (a) поставить в GIC модель лог write ISENABLER, посмотреть был ли SPI 52 разрешён; (b) если нет — искать где XNU/SPTM
+теряет init AppleSEPManager (start / notifyEndpointEnabled / _doorbellAction); (c) если да, но IRQ не летит — заменить pulse
+на set(1)+set(0) на ack-write 0x80000000→0x14 и проверить.

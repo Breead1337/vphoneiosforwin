@@ -100,8 +100,12 @@ static void sep_set_response(VRSepMboxState *s, uint64_t word, uint64_t extra)
     s->regs[R_IN_MSG / 4 + 3] = extra >> 32;
     s->regs[R_IN_STAT / 4]    = 0;          /* ready, no error */
     s->regs[R_IN_STAT2 / 4]   = 0;
-    /* pulse SEP->AP interrupt */
+    /* Signal SEP->AP: pulse both IRQ lines. DT declares two ints (SPI 0x14/0x15);
+     * AVPBooter polls so it doesn't care, but XNU AppleSEPManager sleeps on IRQ.
+     * ponytail: pulse-and-hold on both; ideally only one is the "response" line but
+     * we don't know which until XNU actually wakes. Refine once IRQ enters guest. */
     qemu_irq_pulse(s->irq[0]);
+    qemu_irq_pulse(s->irq[1]);
 }
 
 /* Handle one AP->SEP request word; produce a BOOTSTRAP/control response. */
