@@ -10316,9 +10316,14 @@ static int vr_static_match(CPUARMState *env, uint64_t pc, const char *var, uint6
     if (*n < 0) {
         const char *e = getenv(var);
         *n = 0;
-        while (e && *e && *n < 32) {
+        while (e && *e && *n < 64) {
             char *end;
-            w[(*n)++] = strtoull(e, &end, 0);
+            uint64_t val = strtoull(e, &end, 0);
+            if (end == e) {
+                e++;
+                continue;
+            }
+            w[(*n)++] = val;
             e = *end ? end + 1 : end;
         }
     }
@@ -10337,21 +10342,21 @@ static int vr_static_match(CPUARMState *env, uint64_t pc, const char *var, uint6
 
 static bool vr_watch_hit(CPUARMState *env, uint64_t pc)
 {
-    static uint64_t w[32];
+    static uint64_t w[64];
     static int n = -1;
     return vr_static_match(env, pc, "VR_WATCH", w, &n);
 }
 
 static bool vr_nop_hit(CPUARMState *env, uint64_t pc)
 {
-    static uint64_t w[32];
+    static uint64_t w[64];
     static int n = -1;
     return vr_static_match(env, pc, "VR_NOP", w, &n);
 }
 
 static bool vr_mov0_hit(CPUARMState *env, uint64_t pc)
 {
-    static uint64_t w[32];
+    static uint64_t w[64];
     static int n = -1;
     return vr_static_match(env, pc, "VR_MOV0", w, &n);
 }
@@ -10359,7 +10364,7 @@ static bool vr_mov0_hit(CPUARMState *env, uint64_t pc)
 static bool vr_ret0_hit(CPUARMState *env, uint64_t pc)
 {
     /* mov x0,#0 + ret via caller LR — for early-returning a whole SEP init function */
-    static uint64_t w[32];
+    static uint64_t w[64];
     static int n = -1;
     return vr_static_match(env, pc, "VR_RET0", w, &n);
 }

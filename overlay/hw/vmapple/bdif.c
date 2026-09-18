@@ -155,12 +155,12 @@ static void vblk_cmd(uint64_t devid, BlockBackend *blk, uint64_t gp_addr,
     MemTxResult dma_result;
 
     if (!blk) {
-        goto out;
+        return;
     }
     dma_result = dma_memory_read(&address_space_memory, gp_addr,
                                  &req, sizeof(req), MEMTXATTRS_UNSPECIFIED);
     if (dma_result != MEMTX_OK) {
-        goto out;
+        return;
     }
 
     le2cpu_req(&req);
