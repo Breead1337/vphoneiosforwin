@@ -423,3 +423,25 @@ Follow-up завершил (при копипасте команд для WSL �
 RESUME: (a) поставить в GIC модель лог write ISENABLER, посмотреть был ли SPI 52 разрешён; (b) если нет — искать где XNU/SPTM
 теряет init AppleSEPManager (start / notifyEndpointEnabled / _doorbellAction); (c) если да, но IRQ не летит — заменить pulse
 на set(1)+set(0) на ack-write 0x80000000→0x14 и проверить.
+
+## Обновление 18.09 (26) — GIC-цепочка ЖИВА, IRQ маскируется на CPU (SPTM/DAIF.I)
+Прогон `scratchpad/run_gic_trace.sh` с `-d trace:gicv3_dist_write,trace:gicv3_dist_set_irq,trace:gicv3_cpuif_update,trace:gicv3_cpuif_set_irqs`:
+1. XNU РАЗРЕШИЛ SPI 52 в GIC: `dist_write offset 0x104 data 0x100000` (ISENABLER32-63 бит 20 = INTID 52) @ line 228436.
+2. INTID 52 edge-triggered: `ICFGR[3] (0xc0c) = 0xa0a` — бит 9 = 1 = edge для INTID 52.
+3. Приоритет 0 (`IPRIORITYR[52] @ 0x434 = 0`), группа 1-NS (`IGROUPR @ 0x84 = 0xFFFFFFFF`).
+4. GICD_CTLR (0x0) писан 0x3/0x53 — но в QEMU GICv3 **ARE всегда on** («RAO/WI»), поэтому маршрутизация через IROUTER.
+5. IROUTER[52] (0x61a0) — **не писан**. Default = 0 = aff (0,0,0,0). Наш CPU 0 имеет `mp-affinity=0` → routing_target[52] = CPU 0.
+6. **GIC подтверждает**: `dist_set_irq interrupt 52 level 1` → `cpuif_update irq 52 group 2 (=G1NS) prio 0` → `cpuif_set_irqs setting FIQ 0 IRQ 1`.
+   Т.е. GIC ставит линию IRQ CPU в 1. Хорошо.
+7. **CPU exception 1 [IRQ] за прогон = 0** (только 336 FIQ от таймера, 5653 GENTER, 6 HVC, 5 DA). Т.е. CPU IRQ pin поднят,
+   но ни одна IRQ-исключение не берётся → DAIF.I=1 весь прогон, либо SPTM ловит и не отдаёт EL1, либо HCR/redir на что-то.
+
+По сути Apple XNU в этом сетапе, похоже, ждёт SEP как FIQ (как AIC на реальном железе), а GIC отдаёт IRQ (SPI group 1) — они
+не сходятся. Проверить/сделать: (a) залогировать DAIF.I через `-d int` во время прогона, поймать состояние в момент IRQ pending;
+(b) попробовать overlay-патч `arm_gicv3_dist.c`: форсить INTID 52/53 в Group 0 (сбрасывать бит 20/21 в IGROUPR на write) — тогда
+GIC поднимет FIQ (`cpuif_set_irqs setting FIQ 1 IRQ 0`), а FIQ XNU уже берёт (см. таймер). Если FIQ path запустит ISR SEP —
+дальше по цепи `_captureiBICKCV` пойдёт вниз. (c) альтернатива: реверс какой драйвер XNU обслуживает `gic,vmapple1` и как он
+привязан к CPU IRQ — может там `AppleARMPlatform` или подобное, и оно вообще игнорирует IRQ line.
+
+Инструменты сессии 26: `scratchpad/run_gic_trace.sh`, `scratchpad/gic_analyze.sh` — трейсы GIC, разбор offset'ов.
+
