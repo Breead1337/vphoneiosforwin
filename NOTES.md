@@ -445,3 +445,34 @@ GIC поднимет FIQ (`cpuif_set_irqs setting FIQ 1 IRQ 0`), а FIQ XNU уж
 
 Инструменты сессии 26: `scratchpad/run_gic_trace.sh`, `scratchpad/gic_analyze.sh` — трейсы GIC, разбор offset'ов.
 
+## Обновление 18.09 (27) — Group 0 (FIQ) фильтр установлен, GIC отдаёт FIQ, но SEP всё равно не проходит
+Реализовано в `overlay/hw/vmapple/vresearch101.c` (+~50 строк): фильтр `MemoryRegion` приоритетом 1
+поверх `dist_base + 0x84` (IGROUPR[SPI 32..63]). На запись сбрасывает биты 20/21 (INTID 52/53 = SEP) и
+форвардит в оригинальный GICv3 dist через `memory_region_dispatch_write`. Чтение — прямой форвард.
+Прототип `install_gic_group0_filter()` объявлен до `create_gic`, вызов в его хвосте.
+
+Что доказывает трейс:
+- `gicv3_dist_write offset 0x84 data 0xffcfffff` — фильтр отработал: XNU написал 0xffffffff, GIC принял 0xffcfffff (сброшены биты 20+21).
+- `cpuif_update: irq 52 group 0 prio 0` — GIC теперь классифицирует INTID 52 как G0.
+- `cpuif_set_irqs: setting FIQ 1 IRQ 0` — линия FIQ CPU поднята (раньше поднималась IRQ, безрезультатно).
+
+Прогон `-d int` (без SKIP-фильтра!) с фильтром показывает большой сдвиг:
+- было (сессия 26): 5597 GENTER, 392 FIQ, 6 HVC, 5 DA, **0 IRQ, 0 SVC** — то есть XNU не двинулся.
+- стало (сессия 27): **46757 SVC, 24409 GENTER, 366 FIQ, 8 HVC, 7 DA, 1 IRQ, 1 Undef**. Т.е. XNU реально
+  крутит kernel/user path в 4× активнее — filter не только доставил FIQ, но и разбудил цепочку событий.
+
+НО SEP всё ещё стоит: `sep-mbox: req` = 1818 (то же), `op=30` = 1, `op=31` = 0. Т.е. `_captureiBICKCV`
+не пошёл дальше по циклу 8×KCV. Гипотезы:
+- (a) FIQ handler XNU для этой платформы обрабатывает только таймер (`ICC_HPPIR0` даёт нам INTID 52, но
+  диспетчер видит «не таймер» и молча RET без вызова AppleSEPEndpoint dispatch).
+- (b) SEP ISR регистрируется как G1NS-IRQ handler (в реальной жизни принят IRQ), и наш форс в G0 просто
+  меняет линию, но обработчик не привязан к G0 path.
+- (c) 1× IRQ, что мы всё-таки взяли, — это, возможно, наш SEP; но wait в `_captureiBICKCV` мог быть
+  уже отменён (таймаут 1с в guest времени случается быстро).
+
+RESUME: перед следующим прогоном — трейсить `trace:gicv3_icc_hppir0_read,trace:gicv3_icc_iar0_read`,
+посмотреть, читает ли XNU IAR0 после нашего FIQ и что получает. Если IAR0 = 52 → FIQ handler
+подтвердил приём, но не диспетчит → надо смотреть FIQ handler XNU по адресу VBAR_EL1 + 0x280. Если IAR0
+не читается — FIQ реально ушёл в никуда (SPTM/пропущено). Инструменты фильтра оставлены; для отката —
+удалить блок `install_gic_group0_filter` из `vresearch101.c` и убрать include `exec/memop.h`.
+
