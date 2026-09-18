@@ -100,12 +100,11 @@ static void sep_set_response(VRSepMboxState *s, uint64_t word, uint64_t extra)
     s->regs[R_IN_MSG / 4 + 3] = extra >> 32;
     s->regs[R_IN_STAT / 4]    = 0;          /* ready, no error */
     s->regs[R_IN_STAT2 / 4]   = 0;
-    /* Signal SEP->AP: pulse both IRQ lines. DT declares two ints (SPI 0x14/0x15);
-     * AVPBooter polls so it doesn't care, but XNU AppleSEPManager sleeps on IRQ.
-     * ponytail: pulse-and-hold on both; ideally only one is the "response" line but
-     * we don't know which until XNU actually wakes. Refine once IRQ enters guest. */
-    qemu_irq_pulse(s->irq[0]);
-    qemu_irq_pulse(s->irq[1]);
+    /* Signal SEP->AP: assert both IRQ lines (level-sensitive SPIs).
+     * GIC SPIs are level-triggered, so we hold the line asserted until
+     * the AP/XNU reads the response from R_IN_MSG or acknowledges R_IN_STAT. */
+    qemu_set_irq(s->irq[0], 1);
+    qemu_set_irq(s->irq[1], 1);
 }
 
 /* Handle one AP->SEP request word; produce a BOOTSTRAP/control response. */
@@ -167,6 +166,11 @@ static uint64_t mbox_read(void *opaque, hwaddr off, unsigned size)
         v |= (uint64_t)s->regs[off / 4 + 1] << 32;
     }
     qemu_log_mask(LOG_UNIMP, "sep-mbox: read  %#05" HWADDR_PRIx " -> %#" PRIx64 "\n", off, v);
+    if (off == R_IN_MSG || off == R_IN_STAT) {
+        /* Response consumed: lower IRQ lines */
+        qemu_set_irq(s->irq[0], 0);
+        qemu_set_irq(s->irq[1], 0);
+    }
     (void)dump_ram; (void)diff_ram;
     return v;
 }
@@ -179,6 +183,11 @@ static void mbox_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
     s->regs[off / 4] = v;
     if (size == 8) {
         s->regs[off / 4 + 1] = v >> 32;
+    }
+    /* AP acknowledged response or cleared status */
+    if (off == R_IN_STAT || off == R_IOP_CTRL) {
+        qemu_set_irq(s->irq[0], 0);
+        qemu_set_irq(s->irq[1], 0);
     }
     /* AP wrote a request message word to the outbox -> answer it. */
     if (off == R_OUT_MSG) {
