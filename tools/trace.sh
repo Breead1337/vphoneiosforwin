@@ -1,8 +1,9 @@
 # build, run N seconds with exec trace; print last TBs before the first pvpanic / panic function
-bash /mnt/d/vphonewin/tools/build_inferno.sh >/dev/null || exit 1
-T=${T:-8} D=${D:-,int,exec,nochain} bash /mnt/d/vphonewin/tools/run1.sh > $HOME/vrwork/run.out 2>&1
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "$DIR/build_inferno.sh" >/dev/null || exit 1
+T=${T:-8} D=${D:-,int,exec,nochain} bash "$DIR/run1.sh" > $HOME/vrwork/run.out 2>&1
 head -3 $HOME/vrwork/run.out; echo "--- uart:"; head -c 3000 $HOME/vrwork/vr.uart
-python3 /mnt/d/vphonewin/tools/tbstat.py $HOME/vrwork/vr.log ${STOP:-10550c 105524}; exit
+python3 "$DIR/tbstat.py" $HOME/vrwork/vr.log ${STOP:-10550c 105524}; exit
 import re
 L=open('$HOME/vrwork/vr.log',errors='ignore').read().splitlines()
 pcs=[]

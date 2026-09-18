@@ -1,5 +1,6 @@
 # run with MMIO tracing; summarize accesses per region/offset (first occurrences in order)
-T=${T:-6} D=${D:-} EXTRA="--trace memory_region_ops_read --trace memory_region_ops_write $EXTRA" bash /mnt/d/vphonewin/tools/run1.sh > ~/vrwork/run.out 2>&1
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+T=${T:-6} D=${D:-} EXTRA="--trace memory_region_ops_read --trace memory_region_ops_write $EXTRA" bash "$DIR/run1.sh" > ~/vrwork/run.out 2>&1
 head -2 ~/vrwork/run.out; echo "--- uart:"; head -c 2000 ~/vrwork/vr.uart; echo
 python3 - <<'PY'
 import re, collections, os

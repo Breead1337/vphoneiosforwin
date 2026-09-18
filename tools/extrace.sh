@@ -3,7 +3,9 @@
 # SKIP=regex: also skip those exceptions (e.g. SKIP="Guarded Execution Enter"). usage (WSL): AUX=aux.test ROOT=root.img T=120 bash extrace.sh   -> ~/vrwork/ex.log, uart in vr.uart
 Q=~/inferno/build/qemu-system-aarch64
 W=~/vrwork
-timeout ${T:-120} $Q -M vresearch101 -smp 1 -m 4G -bios /mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin \
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FW_DIR="${FW_DIR:-$ROOT_DIR/fw}"
+timeout ${T:-120} $Q -M vresearch101 -smp 1 -m 4G -bios "${BIOS:-$FW_DIR/vz/AVPBooter.vresearch1.bin}" \
   -drive if=pflash,format=raw,file=$W/${AUX:-aux.img} -drive if=pflash,format=raw,file=$W/${ROOT:-disk.img} \
   -display none -serial file:$W/vr.uart -d int,unimp,guest_errors -D /dev/stdout $EXTRA 2>/dev/null |
 awk -v N=${N:-60} '
