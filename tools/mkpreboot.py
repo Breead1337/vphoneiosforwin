@@ -8,7 +8,7 @@ FW = "/mnt/d/vphonewin/fw/cloud/"
 NSIH = "0" * 96
 FILES = {
     "usr/standalone/firmware/sep-firmware.img4": "Firmware/all_flash/sep-firmware.vresearch101.RELEASE.im4p",
-    "usr/standalone/firmware/devicetree.img4": "Firmware/all_flash/DeviceTree.vresearch101ap.im4p",
+    "usr/standalone/firmware/devicetree.img4": "DeviceTree.patched.im4p",  # tools/dtpatch.py
     "usr/standalone/firmware/root_hash.img4": "Firmware/094-39278-029.dmg.aea.root_hash",
     "usr/standalone/firmware/FUD/StaticTrustCache.img4": "Firmware/094-39278-029.dmg.aea.trustcache",
     "usr/standalone/firmware/FUD/Ap,SecurePageTableMonitor.img4": "Firmware/sptm.vresearch1.release.im4p",

@@ -51,6 +51,7 @@ struct VResearchMachineState {
     MemoryRegion fw_mr;
     MemoryRegion pmusram;
     MemoryRegion ecam_alias;
+    MemoryRegion msi;
     uint64_t ecid;
     Notifier powerdown_notifier;
 };
@@ -126,6 +127,36 @@ static void create_gic(VResearchMachineState *vms)
         sysbus_connect_irq(sbd, i + n, qdev_get_gpio_in(cpu, ARM_CPU_FIQ));
     }
 }
+
+/*
+ * GIC MSI frame (DT gic reg[2] @0x1fff0000, pcie "msi-frame-index" = 2): GICv2m-like. AppleVirtualPlatformPCIE
+ * MSIController asserts TYPER(+8) bit 31 "valid", then base INTID [28:16] and count [12:0]; SETSPI(+0x40) = INTID.
+ */
+#define VR_MSI_BASE 0x1fff0000
+#define VR_MSI_SPI  0x40 /* SPIs 0x40..0x7f, clear of PL011/RTC/SEP (<0x20) and GPEX INTx (0x20..0x2f) */
+#define VR_MSI_NUM  0x40
+
+static uint64_t vr_msi_read(void *opaque, hwaddr off, unsigned size)
+{
+    return off == 8 ? (1u << 31) | ((VR_MSI_SPI + 32) << 16) | VR_MSI_NUM : 0;
+}
+
+static void vr_msi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
+{
+    VResearchMachineState *vms = opaque;
+    int n = (int)(val & 0x1fff) - 32 - VR_MSI_SPI;
+
+    if (off == 0x40 && n >= 0 && n < VR_MSI_NUM) {
+        qemu_irq_pulse(qdev_get_gpio_in(vms->gic, VR_MSI_SPI + n));
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR, "gic-msi: write 0x%" HWADDR_PRIx " = 0x%" PRIx64 "\n", off, val);
+    }
+}
+
+static const MemoryRegionOps vr_msi_ops = {
+    .read = vr_msi_read, .write = vr_msi_write, .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
 
 static qemu_irq spi(VResearchMachineState *vms, int dev)
 {
@@ -323,8 +354,33 @@ static const ARMCPRegInfo vr_gl1_reginfo[] = {
     VR_GL1_REG("ELR_GL1", 6, elr_gl),     VR_GL1_REG("FAR_GL1", 7, far_gl),
 };
 
+/*
+ * The A13 model redirects these *_EL1 encodings to the GL bank while guarded (PPL era). On this generation GL has
+ * its own encodings (C15_C10_x above) and *_EL1 in GL means XNU's real EL1 state: SPTM copies ELR_GL1 -> ELR_EL1
+ * etc. to forward exceptions, and validates XNU's VBAR_EL1 against the kernel image (else
+ * VIOLATION_ILLEGAL_DISPATCH_ENTRY_POINT on XNU's first SPTM call).
+ */
+static void vr_vbar_write(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
+{
+    raw_write(env, ri, value & ~0x1FULL);
+}
+
+#define VR_EL1_REG(nm, c_n, c_m, o2, field, ...) { .name = nm, .state = ARM_CP_STATE_AA64, .opc0 = 3, .opc1 = 0, \
+    .crn = c_n, .crm = c_m, .opc2 = o2, .access = PL1_RW, .type = ARM_CP_OVERRIDE, \
+    .fieldoffset = offsetof(CPUARMState, field), __VA_ARGS__ }
+
+static const ARMCPRegInfo vr_el1_plain_reginfo[] = {
+    VR_EL1_REG("TPIDR_EL1", 13, 0, 4, cp15.tpidr_el[1]),
+    VR_EL1_REG("VBAR_EL1", 12, 0, 0, cp15.vbar_el[1], .writefn = vr_vbar_write, .raw_writefn = raw_write),
+    VR_EL1_REG("SPSR_EL1", 4, 0, 0, banked_spsr[1]), /* BANK_SVC */
+    VR_EL1_REG("ELR_EL1", 4, 0, 1, elr_el[1]),
+    VR_EL1_REG("ESR_EL1", 5, 2, 0, cp15.esr_el[1]),
+    VR_EL1_REG("FAR_EL1", 6, 0, 0, cp15.far_el[1]),
+};
+
 static void vr_apple_cpregs(ARMCPU *cpu)
 {
+    define_arm_cp_regs(cpu, vr_el1_plain_reginfo);
     define_arm_cp_regs(cpu, vr_gl1_reginfo);
     define_arm_cp_regs(cpu, vr_sprr_override_reginfo);
     vr_cpreg_stub(cpu, 6, 15, 12, 4, 1); /* APSTS_EL1: MKeyVld (Inferno only has it in APCTL) */
@@ -390,6 +446,8 @@ static void vr_init(MachineState *machine)
     memory_region_add_subregion(sysmem, memmap[VR_PMUSRAM].base, &vms->pmusram);
 
     create_gic(vms);
+    memory_region_init_io(&vms->msi, OBJECT(vms), &vr_msi_ops, vms, "gic-msi", 0x10000);
+    memory_region_add_subregion(sysmem, VR_MSI_BASE, &vms->msi);
     create_bdif(vms);
 
     vms->cfg = NULL;
@@ -412,6 +470,8 @@ static void vr_init(MachineState *machine)
     sysbus_create_simple("pl031", memmap[VR_RTC].base, spi(vms, VR_RTC));
 
     /* ponytail: logging stubs until each block is reversed */
+    /* anything else in the arm-io window: log + read 0 instead of an external abort (XNU panics on SEA) */
+    create_unimplemented_device("arm-io-hole", 0x10000000, 0x30000000);
     create_unimplemented_device("apv-gfx", memmap[VR_APV_GFX].base, memmap[VR_APV_GFX].size);
     create_unimplemented_device("apv-iosfc", memmap[VR_APV_IOSFC].base, memmap[VR_APV_IOSFC].size);
     create_unimplemented_device("avp-rtc", memmap[VR_AVP_RTC].base, memmap[VR_AVP_RTC].size);

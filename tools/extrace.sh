@@ -8,7 +8,7 @@ timeout ${T:-120} $Q -M vresearch101 -smp 1 -m 4G -bios /mnt/d/vphonewin/fw/vz/A
   -display none -serial file:$W/vr.uart -d int,unimp,guest_errors -D /dev/stdout $EXTRA 2>/dev/null |
 awk -v N=${N:-60} '
   /^Taking exception/ { svc = ((ENVIRON["SKIP"] != "" && $0 ~ ENVIRON["SKIP"]) || $0 ~ /\[SVC\]/); if (!svc && shown < N) { blk = 1; shown++ } else blk = 0 }
-  /unimplemented|unsupported|sprr|permfault|udef|pacauth/ { if (u[$0]++ < 3) print }
+  /unimplemented|unsupported|sprr|permfault|udef|pacauth|gexit-panic|genter#|^watch |Invalid|invalid|sep-mbox/ { if (u[$0]++ < 3) print }
   blk { print }
   /with ELR/ && !svc { h[$NF]++ }
   END { print "--- ELR histogram (non-SVC)"; for (k in h) print h[k], k }' > $W/ex.log

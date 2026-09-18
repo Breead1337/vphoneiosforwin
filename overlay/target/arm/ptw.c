@@ -1468,8 +1468,12 @@ static int get_S1prot(CPUARMState *env, ARMMMUIdx mmu_idx, bool is_aa64,
         if (!arm_is_sprr_enabled(env)) {
             prot_rw = user_rw;
         }
-    } else {
+    } else if (!arm_is_sprr_enabled(env)) {
         /*
+         * vresearch101: under SPRR the PTE AP/XN bits are only an index into the SPRR permission registers, so
+         * "EL0 can read/exec" can't be judged from them (PAN3/EPAN cut XNU's reads of its own __TEXT_EXEC
+         * literals). ponytail: PAN ignored while SPRR is on; derive it from the EL0 SPRR perms if it matters.
+         *
          * PAN controls can forbid data accesses but don't affect insn fetch.
          * Plain PAN forbids data accesses if EL0 has data permissions;
          * PAN3 forbids data accesses if EL0 has either data or exec perms.
@@ -2234,6 +2238,13 @@ static bool get_phys_addr_lpae(CPUARMState *env, S1Translate *ptw,
          */
         result->f.prot = get_S1prot(env, mmu_idx, aarch64, user_rw, prot_rw,
                                     xn, pxn, result->f.attrs.space, out_space);
+        if (arm_is_sprr_enabled(env) && !ptw->in_debug && !(result->f.prot & (1 << access_type)) &&
+            qemu_loglevel_mask(LOG_GUEST_ERROR)) { /* vresearch101 debug: SPRR permission denials */
+            qemu_log_mask(LOG_GUEST_ERROR, "permfault va=0x%" PRIx64 " acc=%d g=%d idx=%d prot_rw=%d user_rw=%d "
+                          "xn=%d pxn=%d -> prot=%d pan=%d\n", (uint64_t)address, access_type,
+                          arm_is_guarded(env), vr_sprr_idx, prot_rw, user_rw, xn, pxn, result->f.prot,
+                          !!(env->pstate & PSTATE_PAN));
+        }
         /*
          * vresearch101 SPRR-learn mode (-d guest_errors): the A13 nibble->RWX table is wrong for this
          * core gen. XNU is correct, so every access it makes is HW-legal: grant it and record which

@@ -8617,6 +8617,56 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                           " x17=0x%" PRIx64 " el=%d g=%d\n",
                           env->pc, env->xregs[30], env->xregs[16], env->xregs[17],
                           cur_el, arm_is_guarded(env));
+            /* PA of the faulting pc + frame-pointer backtrace (the monitor's debug walk can't see XNU) */
+            ARMMMUIdx idx = arm_mmu_idx(env);
+            GetPhysAddrResult r = {};
+            ARMMMUFaultInfo fi = {};
+            uint32_t w = 0;
+            if (!get_phys_addr(env, env->pc, MMU_DATA_LOAD, 0, idx, &r, &fi)) {
+                address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &w, 4);
+            }
+            qemu_log_mask(LOG_GUEST_ERROR, "udef@entry pa=0x%" PRIx64 " word=0x%08x fault=%d\n",
+                          (uint64_t)r.f.phys_addr, w, fi.type);
+            /* XNU panic -> DebuggerTrap (0xe7ffdeff): dump args and any strings they point to */
+            for (int k = 0; k < 8; k++) {
+                char s[200] = {};
+                memset(&r, 0, sizeof(r)); memset(&fi, 0, sizeof(fi));
+                uint64_t va = env->xregs[k] | (env->xregs[k] >> 55 & 1 ? 0xff00000000000000ULL : 0); /* strip PAC */
+                if (!get_phys_addr(env, va, MMU_DATA_LOAD, 0, idx, &r, &fi)) {
+                    address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, s, sizeof(s) - 1);
+                    for (int j = 0; j < 6; j++) { /* one deref: va_list slots -> strings */
+                        uint64_t p = ldq_le_p(s + 8 * j);
+                        p |= (p >> 55 & 1) ? 0xff00000000000000ULL : 0;
+                        memset(&r, 0, sizeof(r)); memset(&fi, 0, sizeof(fi));
+                        if ((p >> 48) == 0xffff && !get_phys_addr(env, p, MMU_DATA_LOAD, 0, idx, &r, &fi)) {
+                            char t[160] = {};
+                            address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, t, sizeof(t) - 1);
+                            for (int i = 0; t[i]; i++) {
+                                if (t[i] < 0x20 || t[i] > 0x7e) { t[i] = '.'; }
+                            }
+                            qemu_log_mask(LOG_GUEST_ERROR, "udef@*x%d[%d]=0x%" PRIx64 " \"%s\"\n", k, j, p, t);
+                        } else if (k == 3) {
+                            qemu_log_mask(LOG_GUEST_ERROR, "udef@*x%d[%d]=0x%" PRIx64 "\n", k, j, p);
+                        }
+                    }
+                }
+                for (int i = 0; s[i]; i++) {
+                    if (s[i] < 0x20 || s[i] > 0x7e) { s[i] = '.'; }
+                }
+                qemu_log_mask(LOG_GUEST_ERROR, "udef@x%d=0x%" PRIx64 " \"%.120s\"\n", k, env->xregs[k], s);
+            }
+            uint64_t fp = env->xregs[29];
+            for (int k = 0; k < 16 && fp; k++) {
+                uint64_t fr[2] = {};
+                memset(&r, 0, sizeof(r)); memset(&fi, 0, sizeof(fi));
+                if (get_phys_addr(env, fp, MMU_DATA_LOAD, 0, idx, &r, &fi)) {
+                    break;
+                }
+                address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, fr, 16);
+                qemu_log_mask(LOG_GUEST_ERROR, "udef@bt #%d fp=0x%" PRIx64 " lr=0x%" PRIx64 "\n",
+                              k, fp, fr[1]);
+                fp = fr[0];
+            }
         }
     }
     int rt;
@@ -8764,6 +8814,17 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
     case EXCP_GENTER:
         addr = env->gxf.gxf_enter_el[new_el];
         genter = true;
+        /* SPTM's GXF entry picks the gate from ESR_GL1[4:0] (GENTER #imm): 0 = dispatch, 4 = ..., so set it */
+        env->gxf.esr_gl[new_el] = env->exception.syndrome;
+        /* vresearch101 debug: XNU -> SPTM/TXM calls (x16 = dispatch target) */
+        if (!from_gl && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
+            static int ng;
+            if (ng++ < 12 || env->xregs[16] > 0xffff) {
+                qemu_log_mask(LOG_GUEST_ERROR, "genter#%d x16=0x%" PRIx64 " x0=0x%" PRIx64 " x1=0x%" PRIx64
+                              " x2=0x%" PRIx64 " pc=0x%" PRIx64 " lr=0x%" PRIx64 "\n", ng, env->xregs[16],
+                              env->xregs[0], env->xregs[1], env->xregs[2], env->pc, env->xregs[30]);
+            }
+        }
         break;
     case EXCP_VSERR:
         addr += 0x180;

@@ -803,10 +803,61 @@ illegal_return:
                   "resuming execution at 0x%" PRIx64 "\n", cur_el, env->pc);
 }
 
+/* vresearch101 debug: VR_WATCH hit (see translate-a64.c) — print static pc + args, always on */
+void HELPER(vr_watch)(CPUARMState *env, uint64_t pc)
+{
+    uint64_t slide = env->cp15.vbar_el[1] - 0xfffffe0008a5f000ULL;
+    qemu_log("watch 0x%" PRIx64 " x0=0x%" PRIx64 " x1=0x%" PRIx64 " x2=0x%" PRIx64 " x3=0x%" PRIx64
+             " x8=0x%" PRIx64 " x16-s=0x%" PRIx64 " x19=0x%" PRIx64 " x20=0x%" PRIx64 " x21=0x%" PRIx64
+             " lr-s=0x%" PRIx64 "\n",
+             pc - slide, env->xregs[0], env->xregs[1], env->xregs[2], env->xregs[3], env->xregs[8], env->xregs[16] - slide,
+             env->xregs[19], env->xregs[20], env->xregs[21], env->xregs[30] - slide);
+}
+
 void HELPER(gexit)(CPUARMState *env)
 {
     int cur_el = arm_current_el(env);
     uint32_t spsr = env->gxf.spsr_gl[cur_el];
+
+    /* vresearch101 debug: SPTM/TXM hand a panic to XNU as GEXIT with x0=4; dump its strings (read in GL regime) */
+    if (env->xregs[0] == 4 && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic x1=0x%" PRIx64 " x2=0x%" PRIx64 " x3=0x%" PRIx64
+                      " elr=0x%" PRIx64 " sp=0x%" PRIx64 "\n", env->xregs[1], env->xregs[2],
+                      env->xregs[3], env->gxf.elr_gl[cur_el], env->xregs[31]);
+        for (int r = 1; r <= 3; r++) {
+            GetPhysAddrResult res = {};
+            ARMMMUFaultInfo fi = {};
+            char buf[256] = {};
+            if (!get_phys_addr(env, env->xregs[r], MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi)) {
+                address_space_read(env_cpu(env)->as, res.f.phys_addr, MEMTXATTRS_UNSPECIFIED,
+                                   buf, sizeof(buf) - 1);
+                for (int i = 0; buf[i]; i++) {
+                    if (buf[i] < 0x20 || buf[i] > 0x7e) { buf[i] = '.'; }
+                }
+                qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic x%d -> \"%s\"\n", r, buf);
+            }
+        }
+        /* SPTM (26.4 vresearch1) loaded-image table: u32 count @0x..d9060, 0x28-byte entries @0x..d9068;
+         * slide from VBAR_GL1 */
+        uint64_t slide = env->gxf.vbar_gl[1] - 0xfffffff0270a5000ULL; /* VBAR_GL1 static */
+        for (int k = -1; k < 8; k++) {
+            uint64_t va = 0xfffffff0270d9068ULL + slide + k * 0x28, e[5] = {};
+            GetPhysAddrResult res = {};
+            ARMMMUFaultInfo fi = {};
+            if (k < 0) {
+                va -= 0x28 - 0x20; /* 0x..d9060 .. d9068: count */
+            }
+            if (get_phys_addr(env, va, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi)) {
+                qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic img fault va=0x%" PRIx64 "\n", va);
+                break;
+            }
+            address_space_read(env_cpu(env)->as, res.f.phys_addr, MEMTXATTRS_UNSPECIFIED, e,
+                               k < 0 ? 8 : 0x28);
+            qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic img[%d] %016" PRIx64 " %016" PRIx64 " %016" PRIx64
+                          " %016" PRIx64 " %016" PRIx64 "\n", k, e[0], e[1], e[2], e[3], e[4]);
+        }
+        qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic sptm slide=0x%" PRIx64 "\n", slide);
+    }
 
     aarch64_save_sp(env, cur_el);
 

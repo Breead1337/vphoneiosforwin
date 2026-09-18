@@ -349,3 +349,32 @@ tools/disa.py (capstone, skipdata). Ключевые несл. адреса: cal
   2) включить Apple-режим PAC согласованно и убедиться, что sign(pacia)+auth(blraa) XNU round-trip'ятся;
   3) если часть указателей baked (chained fixups с diversity) — проверить их применение iBoot/XNU.
 Диагностика (под -d guest_errors): `pacauth` (pauth_helper.c), `udef`/`udef@entry`, `sprrlearn`, `permfault`.
+
+## Обновление 18.09 (24) — XNU прошёл SPTM/TXM, IOKit, упёрся в SEP-драйвер
+Цепочка барьеров, снятых за сессию (все правки в overlay/, инструменты в tools/):
+1. PAC: CPU apple-gxf в Inferno ставит `pauth-noop=true` (PAC = NOP). Гоняем с
+   `-cpu apple-gxf,pauth-noop=off,pauth-impdef=on` — SPTM сам выставляет APCTL.AppleMode и ключи. Сам PAC был не при чём:
+   «прыжок в нули» на 0x…92d5324 = трамплин SPTM в __TEXT_BOOT_EXEC, затёртый стеком ПАНИКИ (x0=4 на входе XNU = SPTM
+   передал панику).
+2. Паники SPTM теперь видны: лог `gexit-panic` (GEXIT с x0=4, строка по x1) + SPTM сам печатает в UART.
+   `VIOLATION_ILLEGAL_DISPATCH_ENTRY_POINT`: модель A13 в GL перенаправляет *_EL1 (VBAR/TPIDR/ELR/SPSR/ESR/FAR) на GL-банк
+   (эпоха PPL). У этого поколения GL-банк = C15_C10_x, а *_EL1 в GL = настоящие EL1 XNU (SPTM копирует ELR_GL1->ELR_EL1,
+   проверяет VBAR_EL1 XNU). Фикс: vr_el1_plain_reginfo (ARM_CP_OVERRIDE) в vresearch101.c.
+3. PAN3/EPAN резал чтение литералов __TEXT_EXEC из EL1: при SPRR биты AP/XN PTE — только индекс. PAN при SPRR выключен (ptw.c).
+4. GENTER не писал синдром в ESR_GL1, а вход SPTM выбирает гейт по ESR_GL1[4:0] (GENTER #0..#4) -> мусорный гейт ->
+   `VIOLATION_ILLEGAL_DISPATCH_DOMAIN`. Фикс: esr_gl = syndrome на EXCP_GENTER (helper.c).
+5. XNU `panic: failed to init ignition blob: 2` = AppleImage4 не нашёл `/chosen/manifest-properties/ECID` (iBoot заполняет
+   из IM4M, а у нас IM4M обходится). tools/dtpatch.py переименовывает заготовку UnusedIntegerProperty0 -> ECID (как iBoot),
+   mkpreboot.py берёт fw/cloud/DeviceTree.patched.im4p. root2.img = пересобранный диск.
+6. External abort по PA 0x1fff0008: это MSI-фрейм GIC (DT gic reg[2], pcie msi-frame-index=2), GICv2m-подобный, TYPER бит31
+   = valid (ассерт AppleVirtualPlatformPCIEMSIController `type & kTypeRegisterValidMask`). Добавлено устройство gic-msi.
+   Плюс ловец `arm-io-hole` (unimplemented на всё окно arm-io) — неизвестные MMIO видны в логе вместо SEA-паники.
+7. ТЕКУЩИЙ барьер: `REQUIRE fail: kIOReturnSuccess == result` в `AppleSEPBooter::_captureiBICKCV()` — XNU шлёт SEPROM
+   bootstrap-сообщение и ждёт ответ opcode 0x82, затем 8x 0x83 (ReportiBICKey, по 4 байта). vr-sep-mbox.c не отвечает
+   так, как ждёт XNU — следующий шаг: протокол AppleSEPBooter (запись в мейлбокс, ep, форма ответа).
+Уже работают: вызовы XNU->SPTM (~3000, map pages, TXM-домен), FIQ-таймер, IOKit матчинг (apv-gfx/apv-iosfc трогают регистры).
+Инструменты: `VR_WATCH=0xstatic,...` (лог регистров на статических VA ядра, слайд из VBAR_EL1; translate-a64.c/helper-a64.c),
+`udef@x*/udef@*x3[..]` (аргументы panic() и va_list), `udef@bt` (бэктрейс по x29), `genter#` (x16 битый), `permfault`,
+tools/w.sh (запуск в WSL без порчи кавычек: base64), tools/xref.py, tools/brto.py, tools/disa.py, tools/monpeek.sh.
+Скрипт прогона: `AUX=aux.test ROOT=root2.img T=300 N=400 SKIP="Guarded Execution|FIQ|Hypervisor|IRQ"
+EXTRA="-cpu apple-gxf,pauth-noop=off,pauth-impdef=on" bash tools/extrace.sh`.
