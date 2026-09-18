@@ -615,3 +615,41 @@ tools/ipsw.exe fw aea -b aBqNFyQ40otbB9ZyDqEihq0K046dgYeJPrXcpv7A9+Y= \
 
 Записан в root2.img со сдвигом 64 MB (чтобы iBoot не сорвался в recovery — он проверяет
 только первые 4 KB). Прогон запущен.
+
+## Обновление 18.09 (33) — 🎉 РОМАРИО, ОНО СМОНТИРОВАЛОСЬ! Rootfs взят, выход в bsd_init rootvp
+**ПРОРЫВ ВЕКА:** Паника `Failed to mount root device` полностью побеждена!
+Том APFS смонтирован, ядро XNU успешно перешло к инициализации пользователей (`bsd_init`)!
+
+### 1. В чём была истинная причина `Failed to mount root device`
+- Исходный код `IOKitBSDInit.cpp` показал, что XNU ждал IOKit-сервис `IOMedia`.
+- В ядре XNU (`kernelcache.research.vresearch101.bin`) **нет и никогда не было драйвера `bdif`** (backdoor interface). `bdif` использовался только загрузчиками AVPBooter и iBoot.
+- Драйвер блочных устройств в XNU — это `com.apple.iokit.AppleVirtIOStorage` (`AppleVirtIOStorageDevice` / `AppleVirtIOPCITransport`), который матчится на PCI-устройство `0x1a00106b` (Apple VirtIO Block).
+- В `vphone-cli` Lakr233 rootfs подключается именно через `VZVirtioBlockDeviceConfiguration` (PCI virtio-blk).
+- В QEMU модель `vmapple-virtio-blk-pci` уже присутствовала, но `vresearch101.c` вешал диск `root2.img` только на `bdif` (pflash), и на шине PCIe блочного устройства не было вообще.
+
+### 2. Решение
+- Диск `root2.img` подключён одновременно:
+  1. В `bdif` (через pflash) — нужен iBoot'у для чтения Preboot/NVRAM.
+  2. В `vmapple-virtio-blk-pci` (через `-drive if=none,id=root0,format=raw,file=$W/root2.img,file.locking=off -device vmapple-virtio-blk-pci,drive=root0,variant=root`) — для XNU на шине PCI.
+
+### 3. Результат прогона
+Паника `Failed to mount root device` ушла! Ядро подхватило диск, APFS смонтировала системный том и передала управление в `bsd_init`!
+
+### 4. Новый барьер: `rootvp not authenticated after mounting`
+Лог паники:
+```
+udef@entry pc=0xfffffe004357864c lr=0xfffffe0043577c9c slide=0x3aac8000
+udef@x1="panic"
+udef@x2="rootvp not authenticated after mounting @%s:%d"
+udef@*x3[3]="bsd_init.c"
+udef@*x3[4]=0x3d3
+```
+
+### 5. Готовое решение для следующего шага
+- Сайт проверки в `bsd_init.c`:
+  - `0xfffffe0008f3a918: blraa x8, x17` (вызов проверки аутентификации rootvp)
+  - `0xfffffe0008f3a91c: cbnz w0, 0xfffffe0008f3ab78` (переход на панику `rootvp not authenticated`)
+- В `vphone-cli` Lakr233 это в точности патч **Patch 3** (`KernelPatchBsdInit.swift: patchBsdInitRootvp`): NOP на условный переход в панику.
+- Обход: передать `VR_NOP="0xfffffe0008f3a91c"` в окружение QEMU (TCG-хук уже готов в `translate-a64.c`) или пропатчить через `patch_kc.py`.
+- После этого ядро переходит к запуску первого пользовательского процесса — `/sbin/launchd`.
+
