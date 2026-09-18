@@ -23,3 +23,20 @@ ls -la /tmp/mnt_v1/sbin/launchd
 umount /tmp/mnt_v1
 losetup -d /dev/loop18
 umount /tmp/mnt_dmg
+
+# --- ponytail: patch /sbin/fsck to return 0 immediately (session 36) ---
+# After the cp above, if we're still mounted, patch fsck entry.
+if mountpoint -q /tmp/mnt_v1 2>/dev/null; then
+    python3 - <<'PY'
+import struct
+p='/tmp/mnt_v1/sbin/fsck'
+try:
+    d=bytearray(open(p,'rb').read())
+    # LC_MAIN entryoff=0x92c: mov w0,#0 ; ret
+    d[0x92c:0x92c+8]=struct.pack('<II', 0x52800000, 0xd65f03c0)
+    open(p,'wb').write(d)
+    print('fsck patched at 0x92c')
+except Exception as e:
+    print('fsck patch skipped:', e)
+PY
+fi
