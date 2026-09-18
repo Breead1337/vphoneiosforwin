@@ -1038,8 +1038,11 @@ pte_to_sprr_prot_is_guarded(CPUARMState *env, int ap, int xn, int pxn, bool guar
     attr = SPRR_EXTRACT_IDX_ATTR(sprr_perm, sprr_idx);
     prot = 0;
     if (qemu_loglevel_mask(LOG_GUEST_ERROR)) { /* vresearch101 debug: SPRR permission lookups */
-        qemu_log_mask(LOG_GUEST_ERROR, "sprr %s%d: ap=%d xn=%d pxn=%d idx=%d perm=0x%" PRIx64 " attr=0x%x\n",
-                      guarded ? "GL" : "EL", el, ap, xn, pxn, sprr_idx, sprr_perm, attr);
+        static int sprr_log_cnt;
+        if (sprr_log_cnt++ < 20) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sprr %s%d: ap=%d xn=%d pxn=%d idx=%d perm=0x%" PRIx64 " attr=0x%x\n",
+                          guarded ? "GL" : "EL", el, ap, xn, pxn, sprr_idx, sprr_perm, attr);
+        }
     }
 
     if (guarded) {

@@ -8607,6 +8607,40 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
     unsigned int new_mode = aarch64_pstate_mode(new_el, true);
     unsigned int old_mode;
     unsigned int cur_el = arm_current_el(env);
+    /* vresearch101 debug: log real EL0 (non-guarded, non-SVC) user exceptions */
+    struct el0_fault_rec {
+        uint32_t cnt;
+        uint32_t excp;
+        uint64_t pc, sp, lr, far, esr;
+        uint32_t ec;
+    };
+    static struct el0_fault_rec el0_ring[64];
+    static int el0_ring_idx;
+    static int el0_total_cnt;
+
+    if (cur_el == 0 && !from_gl && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
+        uint32_t ec = env->cp15.esr_el[1] >> 26;
+        if (ec != 0x15) {
+            int r_idx = (el0_ring_idx++) & 63;
+            el0_ring[r_idx] = (struct el0_fault_rec){
+                .cnt = ++el0_total_cnt,
+                .excp = cs->exception_index,
+                .pc = env->pc,
+                .sp = env->xregs[31],
+                .lr = env->xregs[30],
+                .far = env->cp15.far_el[1],
+                .esr = env->cp15.esr_el[1],
+                .ec = ec,
+            };
+            if (el0_total_cnt <= 60) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "real_el0@fault #%d excp=%d pc=0x%" PRIx64 " sp=0x%" PRIx64 " lr=0x%" PRIx64
+                              " far=0x%" PRIx64 " esr=0x%" PRIx64 " ec=0x%x\n",
+                              el0_total_cnt, cs->exception_index, env->pc, env->xregs[31], env->xregs[30],
+                              env->cp15.far_el[1], env->cp15.esr_el[1], ec);
+            }
+        }
+    }
 
     /* vresearch101 debug: first-time context for undefined-instruction traps (Apple op vs bad jump) */
     if (cs->exception_index == EXCP_UDEF && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
@@ -8622,6 +8656,18 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                           env->pc - slide_static,
                           (env->xregs[30] | (env->xregs[30] >> 55 & 1 ? 0xff00000000000000ULL : 0))
                           - slide_static);
+            /* Dump the last real EL0 faults before this panic */
+            if (el0_total_cnt > 0) {
+                qemu_log_mask(LOG_GUEST_ERROR, "=== LAST REAL EL0 FAULTS (total=%d) ===\n", el0_total_cnt);
+                int start = el0_total_cnt > 32 ? el0_total_cnt - 32 : 0;
+                for (int i = start; i < el0_total_cnt; i++) {
+                    struct el0_fault_rec *rec = &el0_ring[i & 63];
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "  el0_tail #%d excp=%d pc=0x%" PRIx64 " sp=0x%" PRIx64 " lr=0x%" PRIx64
+                                  " far=0x%" PRIx64 " esr=0x%" PRIx64 " ec=0x%x\n",
+                                  rec->cnt, rec->excp, rec->pc, rec->sp, rec->lr, rec->far, rec->esr, rec->ec);
+                }
+            }
             /* PA of the faulting pc + frame-pointer backtrace (the monitor's debug walk can't see XNU) */
             ARMMMUIdx idx = arm_mmu_idx(env);
             GetPhysAddrResult r = {};
@@ -8639,7 +8685,7 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                 uint64_t va = env->xregs[k] | (env->xregs[k] >> 55 & 1 ? 0xff00000000000000ULL : 0); /* strip PAC */
                 if (!get_phys_addr(env, va, MMU_DATA_LOAD, 0, idx, &r, &fi)) {
                     address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, s, sizeof(s) - 1);
-                    for (int j = 0; j < 6; j++) { /* one deref: va_list slots -> strings */
+                    for (int j = 0; j < 16; j++) { /* one deref: va_list slots -> strings or raw values */
                         uint64_t p = ldq_le_p(s + 8 * j);
                         p |= (p >> 55 & 1) ? 0xff00000000000000ULL : 0;
                         memset(&r, 0, sizeof(r)); memset(&fi, 0, sizeof(fi));
@@ -8650,7 +8696,7 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                                 if (t[i] < 0x20 || t[i] > 0x7e) { t[i] = '.'; }
                             }
                             qemu_log_mask(LOG_GUEST_ERROR, "udef@*x%d[%d]=0x%" PRIx64 " \"%s\"\n", k, j, p, t);
-                        } else if (k == 3) {
+                        } else {
                             qemu_log_mask(LOG_GUEST_ERROR, "udef@*x%d[%d]=0x%" PRIx64 "\n", k, j, p);
                         }
                     }

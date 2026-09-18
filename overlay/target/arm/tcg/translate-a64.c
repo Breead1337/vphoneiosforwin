@@ -10369,6 +10369,40 @@ static bool vr_ret0_hit(CPUARMState *env, uint64_t pc)
     return vr_static_match(env, pc, "VR_RET0", w, &n);
 }
 
+static bool vr_b_hit(CPUARMState *env, uint64_t pc, uint64_t *dst_out)
+{
+    static uint64_t src[64], dst[64];
+    static int n = -1;
+    if (n < 0) {
+        const char *e = getenv("VR_B");
+        n = 0;
+        while (e && *e && n < 64) {
+            char *end;
+            uint64_t s = strtoull(e, &end, 0);
+            if (*end == ':') {
+                uint64_t d = strtoull(end + 1, &end, 0);
+                src[n] = s;
+                dst[n] = d;
+                n++;
+            }
+            e = *end ? end + 1 : end;
+        }
+    }
+    uint64_t vbar = env->cp15.vbar_el[1];
+    if (!n || ((vbar - 0xfffffe0008a5f000ULL) & 0x3fff) || vbar < 0xfffffe0000000000ULL) {
+        return false;
+    }
+    uint64_t slide = vbar - 0xfffffe0008a5f000ULL;
+    uint64_t st = pc - slide;
+    for (int i = 0; i < n; i++) {
+        if (src[i] == st) {
+            *dst_out = dst[i] + slide;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *s = container_of(dcbase, DisasContext, base);
@@ -10431,6 +10465,13 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         gen_a64_set_pc(s, cpu_reg(s, 30));
         s->base.pc_next = pc + 4; /* TB must have non-zero size or setjmp_gen_code asserts */
         s->base.is_jmp = DISAS_JUMP;
+        return;
+    }
+    uint64_t vr_target_pc;
+    if (vr_b_hit(env, pc, &vr_target_pc)) {
+        s->base.pc_next = pc + 4;
+        reset_btype(s);
+        gen_goto_tb(s, 0, (int64_t)(vr_target_pc - pc));
         return;
     }
     insn = arm_ldl_code(env, &s->base, pc, s->sctlr_b);

@@ -429,7 +429,7 @@ static uint64_t pauth_auth(CPUARMState *env, uint64_t ptr, uint64_t modifier,
     /* vresearch101 debug: instruction-key auths (PAC provenance of failing blraa) */
     if (!data && arm_current_el(env) && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
         static int n;
-        if (modifier == 0xae56 || n++ < 12) {
+        if (n++ < 20) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "pacauth k%d ptr=0x%" PRIx64 " mod=0x%" PRIx64 " orig=0x%" PRIx64
                           " apctl=0x%" PRIx64 " keylo=0x%" PRIx64 "\n",
@@ -440,26 +440,7 @@ static uint64_t pauth_auth(CPUARMState *env, uint64_t ptr, uint64_t modifier,
     cmp_mask = MAKE_64BIT_MASK(bot_bit, top_bit - bot_bit);
     cmp_mask &= ~MAKE_64BIT_MASK(55, 1);
 
-    if (pauth_feature >= PauthFeat_2) {
-        ARMPauthFeature fault_feature =
-            is_combined ? PauthFeat_FPACCOMBINED : PauthFeat_FPAC;
-        uint64_t result = ptr ^ (pac & cmp_mask);
-
-        if (pauth_feature >= fault_feature
-            && ((result ^ sextract64(result, 55, 1)) & cmp_mask)) {
-            pauth_fail_exception(env, data, keynumber, ra);
-        }
-        return result;
-    }
-
-    if ((pac ^ ptr) & cmp_mask) {
-        int error_code = (keynumber << 1) | (keynumber ^ 1);
-        if (param.tbi) {
-            return deposit64(orig_ptr, 53, 2, error_code);
-        } else {
-            return deposit64(orig_ptr, 61, 2, error_code);
-        }
-    }
+    /* vresearch101: always accept and strip PAC so mismatched keys/signatures never crash guest */
     return orig_ptr;
 }
 

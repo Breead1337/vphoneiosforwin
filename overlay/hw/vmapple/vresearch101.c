@@ -347,6 +347,12 @@ static const ARMCPRegInfo vr_sprr_override_reginfo[] = {
       .access = PL1_RW, .type = ARM_CP_OVERRIDE,
       .readfn = raw_read, .writefn = raw_write,
       .fieldoffset = offsetof(CPUARMState, sprr.sprr_el_br_el1[1][0]) },
+    { .name = "SPRR_PERM_EL0", .state = ARM_CP_STATE_AA64,
+      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 1, .opc2 = 5,
+      .access = PL0_RW, .type = ARM_CP_OVERRIDE,
+      .readfn = raw_read, .writefn = vr_sprr_perm_write, .raw_writefn = raw_write,
+      .resetvalue = 0x2010002030100000ULL,
+      .fieldoffset = offsetof(CPUARMState, sprr.sprr_el_br_el1[0][0]) },
 };
 
 #define VR_GL1_REG(nm, op2, field) { .name = nm, .state = ARM_CP_STATE_AA64, .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 10, .opc2 = op2, .access = PL1_RW, .fieldoffset = offsetof(CPUARMState, gxf.field[1]) }
