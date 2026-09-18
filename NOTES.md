@@ -516,3 +516,27 @@ RESUME: перед следующим прогоном — трейсить `tra
 не читается — FIQ реально ушёл в никуда (SPTM/пропущено). Инструменты фильтра оставлены; для отката —
 удалить блок `install_gic_group0_filter` из `vresearch101.c` и убрать include `exec/memop.h`.
 
+
+## Обновление 18.09 (29) — 🎉 XNU дошёл до BSD-mount root, паника «Failed to mount root device»
+Прогон с сессии-28-style bypass (VR_RET0 на bootSEP/_captureiBICKCV chain + VR_MOV0 на 15 waitForMessage вызовах),
+после мёржа PR#1-#6 и фикса `translate-a64` (VR_RET0 pc_next+4, иначе `tb->size != 0` assert).
+
+Session 28 «спин-цикл в GENTER (5836x одного ELR)» переосмыслен: это **не** спин-wait,
+а PMAP-init/руминация. XNU реально продвигался, просто долго. Через 360с — паника уже BSD-уровня:
+```
+udef@x2="Failed to mount root device @%s:%d"
+udef@x3[3]="IOKitBSDInit.cpp"  x3[4]=0x3a5 (line)  x3[5]=0x1
+slide XNU = 0x32924000
+```
+Значит вся цепочка **AVPBooter → LLB(iBoot) → SPTM → TXM → XNU → IOKit → BSD** прошла успешно.
+`apv-iosfc/avp-ctrr` unimpl-регистры не блокировали (avp-ctrr: только 2 чтения, iosfc: ничего).
+bdif прочитал aux (`devid=0x10000 off=0`) — виртио-storage backend работает.
+
+Следующая цель — **дать XNU валидный APFS-контейнер** на root2.img: сейчас там пустой truncate 64G,
+XNU видит его через bdif как блочное устройство, но APFS-заголовка нет → mount fail. Пути:
+1. Достать iOS restore-образ (SystemVolume) через `ipsw` из cloudOS 26.4;
+2. Записать raw APFS-контейнер в root2.img;
+3. XNU увидит валидную FS и продолжит до launchd.
+
+Инструмент: `tools/ipsw.exe fw aea` (расшифровка), 7-Zip читает APFS из DMG.
+Близость до launchd/консоли: **дни-недели**, если APFS-путь пройдёт без новых стубов.
