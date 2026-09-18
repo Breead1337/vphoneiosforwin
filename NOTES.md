@@ -599,3 +599,19 @@ OS DMG.
 
 **How to apply:** возобновление — сначала получить расшифрованный OS DMG (macOS + ipsw). Без
 этого путь (B) — long tail.
+
+## Обновление 18.09 (32) — 🎉 РАСШИФРОВАН OS ROOTFS
+Ключ AEA для build 23E5207q (iOS 26.4 beta) оказался **общим** для всей сборки (не привязан
+к устройству). Взят с TheAppleWiki (LuckESeed 23E5207q для iPhone16,2):
+`Key: 681a8d172438d28b5b07d6720ea12286ad0ad38e9d8187893eb5dca6fec0f7e6`
+как base64: `aBqNFyQ40otbB9ZyDqEihq0K046dgYeJPrXcpv7A9+Y=`
+
+Расшифровка одной командой (не нужен macOS!):
+```
+tools/ipsw.exe fw aea -b aBqNFyQ40otbB9ZyDqEihq0K046dgYeJPrXcpv7A9+Y= \
+    _work/rootfs/094-39278-029.dmg.aea -o _work/rootfs/test-decrypt/
+```
+Получен `094-39278-029.dmg` = 1.37 GB, `NXSB` @ offset 0x20 — валидный APFS-контейнер.
+
+Записан в root2.img со сдвигом 64 MB (чтобы iBoot не сорвался в recovery — он проверяет
+только первые 4 KB). Прогон запущен.
