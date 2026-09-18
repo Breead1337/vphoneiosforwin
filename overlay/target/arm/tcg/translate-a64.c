@@ -10356,6 +10356,14 @@ static bool vr_mov0_hit(CPUARMState *env, uint64_t pc)
     return vr_static_match(env, pc, "VR_MOV0", w, &n);
 }
 
+static bool vr_ret0_hit(CPUARMState *env, uint64_t pc)
+{
+    /* mov x0,#0 + ret via caller LR — for early-returning a whole SEP init function */
+    static uint64_t w[32];
+    static int n = -1;
+    return vr_static_match(env, pc, "VR_RET0", w, &n);
+}
+
 static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *s = container_of(dcbase, DisasContext, base);
@@ -10410,6 +10418,13 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         /* replace this insn with "mov x0, #0" — useful to short-circuit `bl <checker>; cbnz w0, panic` */
         tcg_gen_movi_i64(cpu_reg(s, 0), 0);
         s->base.pc_next = pc + 4;
+        return;
+    }
+    if (vr_ret0_hit(env, pc)) {
+        /* mov x0,#0 then plain RET to caller's LR — bypass entire function that requires SEP hardware */
+        tcg_gen_movi_i64(cpu_reg(s, 0), 0);
+        gen_a64_set_pc(s, cpu_reg(s, 30));
+        s->base.is_jmp = DISAS_JUMP;
         return;
     }
     insn = arm_ldl_code(env, &s->base, pc, s->sctlr_b);

@@ -445,6 +445,32 @@ GIC поднимет FIQ (`cpuif_set_irqs setting FIQ 1 IRQ 0`), а FIQ XNU уж
 
 Инструменты сессии 26: `scratchpad/run_gic_trace.sh`, `scratchpad/gic_analyze.sh` — трейсы GIC, разбор offset'ов.
 
+## Обновление 18.09 (28) — SEP полностью байпасят через VR_RET0, XNU идёт дальше
+Тактика ускорения: **не эмулировать SEP протокол**, а обходить всю цепочку XNU-side.
+Добавлен новый хук в `overlay/target/arm/tcg/translate-a64.c`: `VR_RET0="0xVA,..."` — на статическом VA
+эмитит `mov x0, #0; ret` (использует непроверенный LR из caller). Компания к VR_WATCH/VR_NOP/VR_MOV0.
+
+Инструментарий разведки: `ipsw macho disass -a <VA> -c N -q` (без -t иногда работает лучше), `ipsw macho a2o/o2a`,
+`ipsw kernel cpp -c <Class> --methods`. Slide вычислять из panic-cstring: unslid → `ipsw macho o2a`,
+slid → берём из `udef@x1="panic"`. У нас unslid "panic" = 0xfffffe00070433dd (одна из трёх копий).
+
+Что установили:
+- 15 `bl 0xfffffe0007eaf610` (waitForMessage) → все в VR_MOV0 → wait возвращает 0=успех.
+- `VR_RET0=0xfffffe0007eb5c7c,0xfffffe0007eafb20` — родительские функции chain'а: `bootSEP`/`_bootAction`
+  и `_captureiBICKCV` caller. Первая инструкция обеих (`pacibsp`) заменена на `mov x0,#0; ret via LR`.
+
+Результат (сессия 28, T=180):
+- В sep.log ТОЛЬКО AVPBooter-era ops (1,16,17) — XNU не отправил ни op=2, ни op=30 в SEP. Значит вся
+  цепь `AppleSEPManager::_bootSEP → AppleSEPBooter::bootSEP → _bootAction → _captureiBICKCV` не выполняется.
+- В sep_ex.log 22× `gexit-panic x1=0x66746e6972706b` (это ASCII "kprintf") — это не паника, а SPTM
+  вывод kprintf с нулями (arg-array пустой). После этого XNU **продолжает крутить** (много sprr событий
+  на новых адресах, elr=0xfffffe0044391340 в EL1 — это ELR из SPTM в юзерспейс XNU).
+- Никаких REQUIRE fails, никаких `udef@x*` паник в SEP или после.
+
+Следующее: (a) удлинить T до 600с и посмотреть до какого барьера XNU дойдёт (APFS/NVMe/launchd?),
+(b) залогировать kprintf аргументы (SPTM print через `gexit-panic img[N]` — сейчас все нули, значит
+кто-то вызвал kprintf с пустой строкой; надо снять аргументы x0..x2 в момент захода в SPTM print gate).
+
 ## Обновление 18.09 (27) — Group 0 (FIQ) фильтр установлен, GIC отдаёт FIQ, но SEP всё равно не проходит
 Реализовано в `overlay/hw/vmapple/vresearch101.c` (+~50 строк): фильтр `MemoryRegion` приоритетом 1
 поверх `dist_base + 0x84` (IGROUPR[SPI 32..63]). На запись сбрасывает биты 20/21 (INTID 52/53 = SEP) и

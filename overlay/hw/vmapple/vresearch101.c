@@ -41,7 +41,6 @@
 #include "system/runstate.h"
 #include "system/system.h"
 #include "system/block-backend.h"
-#include "exec/memop.h"
 
 struct VResearchMachineState {
     MachineState parent;
@@ -101,8 +100,6 @@ static const int irqmap[] = {
     [VR_AVP_RTC] = 0x13, [VR_SEP] = 0x14, [VR_PCIE] = 0x20,
 };
 
-static void install_gic_group0_filter(VResearchMachineState *vms, SysBusDevice *sbd);
-
 static void create_gic(VResearchMachineState *vms)
 {
     MachineState *ms = MACHINE(vms);
@@ -129,56 +126,12 @@ static void create_gic(VResearchMachineState *vms)
         sysbus_connect_irq(sbd, i, qdev_get_gpio_in(cpu, ARM_CPU_IRQ));
         sysbus_connect_irq(sbd, i + n, qdev_get_gpio_in(cpu, ARM_CPU_FIQ));
     }
-    install_gic_group0_filter(vms, sbd);
 }
-
-/*
- * ponytail: XNU raises SEP INTID 52/53 as SPI, and the GIC/CPU cpuif pin gets asserted as G1NS (IRQ),
- * but the guest CPU never takes exception 1 in this run (DAIF.I likely masked while SPTM is active).
- * On real Apple silicon, everything except the timer arrives via FIQ (AIC delivers all as FIQ).
- * Force INTID 52/53 into Group 0 by intercepting XNU's write to GICD_IGROUPR[SPI 32-63] (offset 0x84)
- * and clearing bits 20/21 before forwarding to the underlying GICv3 distributor. Then GIC raises the
- * FIQ pin instead of IRQ, and XNU's FIQ dispatcher can pick up INTID 52 via ICC_HPPIR0.
- * Filter is 4 bytes wide at dist_base+0x84, priority 1 (overlaps the GIC's SysBus mapping).
- * Reads pass through unchanged so guest sees its written value on readback.
- */
-static MemoryRegion *vr_gic_dist_mr;
-#define VR_GIC_G0_MASK ((1u << 20) | (1u << 21))  /* INTID 52, 53 (SEP) */
-
-static uint64_t vr_gic_igroupr_read(void *opaque, hwaddr off, unsigned size)
-{
-    uint64_t v = 0;
-    memory_region_dispatch_read(vr_gic_dist_mr, 0x84 + off, &v,
-                                size_memop(size), MEMTXATTRS_UNSPECIFIED);
-    return v;
-}
-
-static void vr_gic_igroupr_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
-{
-    if (off == 0 && size == 4) {
-        v &= ~(uint64_t)VR_GIC_G0_MASK;
-    }
-    memory_region_dispatch_write(vr_gic_dist_mr, 0x84 + off, v,
-                                 size_memop(size), MEMTXATTRS_UNSPECIFIED);
-}
-
-static const MemoryRegionOps vr_gic_igroupr_ops = {
-    .read = vr_gic_igroupr_read,
-    .write = vr_gic_igroupr_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 4, .max_access_size = 4 },
-    .impl  = { .min_access_size = 4, .max_access_size = 4 },
-};
-
-static void install_gic_group0_filter(VResearchMachineState *vms, SysBusDevice *sbd)
-{
-    static MemoryRegion filter;
-    vr_gic_dist_mr = sysbus_mmio_get_region(sbd, 0);
-    memory_region_init_io(&filter, OBJECT(vms), &vr_gic_igroupr_ops, vms,
-                          "gicd-igroupr-sep-g0", 4);
-    memory_region_add_subregion_overlap(get_system_memory(),
-        memmap[VR_GIC_DIST].base + 0x84, &filter, 1);
-}
+/* ponytail note (removed): tried a MemoryRegion filter that forced SEP INTID 52/53 into GIC Group 0
+ * (bits 20/21 cleared on IGROUPR write at dist+0x84). GIC delivered FIQ + XNU wrote ICC_EOIR0=0x34
+ * once, so the FIQ path IS reachable — but XNU has no G0 handler registered for SEP → generic ack&drop,
+ * 0x100 never read, _captureiBICKCV still fails. Real fix is on the IRQ path (DAIF.I masked in GXF), or
+ * NOP-bypass _captureiBICKCV via translator hooks. See NOTES.md p.27-28. */
 
 /*
  * GIC MSI frame (DT gic reg[2] @0x1fff0000, pcie "msi-frame-index" = 2): GICv2m-like. AppleVirtualPlatformPCIE
