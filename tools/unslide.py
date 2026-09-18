@@ -52,10 +52,11 @@ def va_to_file_offset(kc_path, va):
     if not os.path.exists(kc_path):
         return None
     with open(kc_path, "rb") as f:
-        header = f.read(4096)
+        header = f.read(32)
         if len(header) < 32:
             return None
-        ncmds = struct.unpack_from("<I", header, 16)[0]
+        ncmds, sizeofcmds = struct.unpack_from("<II", header, 16)
+        header += f.read(sizeofcmds)  # fileset kernelcaches have far more than 4K of load commands
         o = 32
         for _ in range(ncmds):
             if o + 8 > len(header):

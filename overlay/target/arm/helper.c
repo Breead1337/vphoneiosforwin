@@ -8838,7 +8838,7 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                 sites[idx].x16 = env->xregs[16];
                 sites[idx].count = 0;
             }
-            if (idx == -1 || sites[idx].count++ < 5) {
+            if (idx >= 0 && sites[idx].count++ < 5) { /* ponytail: sites past 64 are dropped silently */
                 qemu_log_mask(LOG_GUEST_ERROR, "genter#%d x16=0x%" PRIx64 " x0=0x%" PRIx64 " x1=0x%" PRIx64
                               " x2=0x%" PRIx64 " x3=0x%" PRIx64 " pc=0x%" PRIx64 " lr=0x%" PRIx64 "\n",
                               (idx >= 0 ? sites[idx].count : 0), env->xregs[16],
