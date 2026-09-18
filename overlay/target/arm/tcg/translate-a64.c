@@ -10429,6 +10429,7 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         /* mov x0,#0 then plain RET to caller's LR — bypass entire function that requires SEP hardware */
         tcg_gen_movi_i64(cpu_reg(s, 0), 0);
         gen_a64_set_pc(s, cpu_reg(s, 30));
+        s->base.pc_next = pc + 4; /* TB must have non-zero size or setjmp_gen_code asserts */
         s->base.is_jmp = DISAS_JUMP;
         return;
     }

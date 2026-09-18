@@ -23,7 +23,7 @@ timeout "$T" "$Q" -M vresearch101 -smp 1 -m 4G \
 awk -v N=$N -v EXOUT="$EXOUT" -v SEPOUT="$SEPOUT" '
   BEGIN { shown = 0 }
   /sep-mbox/ { print >> SEPOUT; next }
-  /gexit-panic|permfault|udef@|Guarded Execution Exit|VIOLATION|VBAR_EL1/ { print >> EXOUT }
+  /genter#|gexit-panic|gexit-kprintf|permfault|udef@|Guarded Execution Exit|VIOLATION|VBAR_EL1/ { print >> EXOUT }
   /^Taking exception/ { svc = ((ENVIRON["SKIP"] != "" && $0 ~ ENVIRON["SKIP"]) || $0 ~ /\[SVC\]/); if (!svc && shown < N) { blk = 1; shown++ } else blk = 0 }
   blk { print >> EXOUT }
 '
