@@ -135,10 +135,12 @@ static void sep_handle_request(VRSepMboxState *s, uint64_t req)
                 data = 0xA5A50000u | tag;
             } else if (op == 2) {
                 /*
-                 * GET_STATUS (op 2): SEP initialization and endpoint readiness flag.
-                 * Hand back ready/unlocked status bitmask so XNU endpoint poll does not hang.
+                 * GET_STATUS (op 2): SEP init / endpoint readiness. XNU AppleSEPBooter
+                 * panics "SEP Boot Failure: unexpected status 1:%u" (session 30) when
+                 * the returned status is non-zero. Answer 0 = ready-and-clean.
+                 * ponytail: single ready code, refine per subop once XNU asks anything.
                  */
-                data = 0x00000001u;
+                data = 0x00000000u;
             } else if (op == 16) {
                 /*
                  * OP 16 (0x10): AVPBooter FUN_00103788 calls op 16 twice to read

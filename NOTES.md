@@ -563,3 +563,39 @@ QEMU падает с assert `tb->size != 0` в TCG на VR_RET0-хуке (не �
 **Why:** мы уперлись в шифрование Apple. Без PEM-ключа dальнейшее продвижение к launchd блокировано;
 идентификация корректного барьера («ищем PEM или обходим iBoot») даёт юзеру выбор.
 **How to apply:** при возобновлении — сначала спросить, есть ли PEM-ключ или пример расшифрованного 26.4 rootfs.
+
+## Обновление 18.09 (31) — обход iBoot удался, XNU root-mount упирается в SEP-эмуляцию
+С APFS-контейнером на root2.img со сдвигом >= 4 KB iBoot **не** заходит в recovery mode
+(`======== End of iBoot serial output. ========` идёт → XNU). Это доказывает: iBoot читает
+только первый блок (4 KB) в начале root2 и, если увидит там знакомый magic, уходит в recovery.
+С offset 32 байт (в пределах первого блока) — recovery всё равно. С offset 64 MB — успех.
+
+Но: **XNU в VR_RET0-байпасе SEP так и не читает root2** через bdif — только aux (session 29:
+`bdif vblk_read: aux off=0x1500000 len=512 r=0`). Значит его storage-стек ждёт VM-metadata
+из SEP, а не сканирует диски сам.
+
+Отправка op=2 (`GET_STATUS`) с data=0 вместо 0x1 сдвигает натуральный путь (без VR_RET0)
+с AppleSEPBooter.cpp:0x3a5 (шаг 3, «unexpected status 1») в **AppleSEPBooter.cpp:0x169**
+(шаг 1). Строка «unexpected status 1» — литерал номера шага, а `%u` — значение, которое
+XNU получает и не согласует; ответ op=30 (`data=0`) он не принимает, до op=31 (KCV-цикл)
+дело не доходит.
+
+Барьер такой: SEP-инициализация ждёт правильный **KCV-ключ и статус-цепь**, которую без
+реального SEP-firmware эмулировать без реверса всего `AppleSEPBooter::_bootAction` не
+получится. Обход через VR_RET0 работает до BSD, но там XNU-storage-driver уже требует
+VM-metadata от SEP и всё равно не поднимает root.
+
+Реальные пути:
+- (A) Расшифровать `094-39278-029.dmg.aea` из cloudOS_26.4.ipsw. Без macOS не получить (403
+  на wkms.sd.apple.com без auth-cert). Один запуск `ipsw fw aea -o <dir> 094-39278-029.dmg.aea`
+  на макбуке даёт готовый DMG.
+- (B) Реверс `AppleSEPBooter::_bootAction` (unslid 0xfffffe0008aafcf0—0x8ab0740), эмуляция
+  оставшихся SEP-опкодов (32+). Оценка: 1-2 недели фокусной работы.
+- (C) Далее — эмуляция AGX (Apple GPU) для UI. Годы, если делать в TCG.
+
+Сессия зафиксировала все правки (PR#1-#6 + VR_RET0 pc_next fix + op=2 status=0) в main. Юзер
+разрешил обход iBoot; iBoot прошли, но настоящий блокер — SEP-эмуляция и/или расшифрованный
+OS DMG.
+
+**How to apply:** возобновление — сначала получить расшифрованный OS DMG (macOS + ipsw). Без
+этого путь (B) — long tail.
