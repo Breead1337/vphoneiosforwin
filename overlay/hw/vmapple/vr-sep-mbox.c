@@ -134,6 +134,12 @@ static void sep_handle_request(VRSepMboxState *s, uint64_t req)
                  * vary it by tag so the nonce isn't a constant run.
                  */
                 data = 0xA5A50000u | tag;
+            } else if (op == 2) {
+                /*
+                 * GET_STATUS (op 2): SEP initialization and endpoint readiness flag.
+                 * Hand back ready/unlocked status bitmask so XNU endpoint poll does not hang.
+                 */
+                data = 0x00000001u;
             } else if (op == 16) {
                 /*
                  * OP 16 (0x10): AVPBooter FUN_00103788 calls op 16 twice to read
@@ -141,6 +147,18 @@ static void sep_handle_request(VRSepMboxState *s, uint64_t req)
                  * If the combined 64-bit value is zero, it panics at 0x10380c.
                  */
                 data = 0x10000 | (tag ? tag : 1);
+            } else if (op == 30) {
+                /*
+                 * KCV_INIT (op 30 / 0x1e): XNU AppleSEPBooter::_captureiBICKCV handshake.
+                 * Expects ACK response op 130 (0x82) with success status.
+                 */
+                data = 0x00000000u;
+            } else if (op == 31) {
+                /*
+                 * KCV_READ (op 31 / 0x1f): 8x read loop in _captureiBICKCV.
+                 * Expects response op 131 (0x83) containing valid non-zero KCV key data.
+                 */
+                data = 0x5A5A0000u | ((uint32_t)tag << 8) | 0x01;
             }
             resp = MSG_MK(ep, tag, op + 100, 0, data);
         }
