@@ -653,3 +653,56 @@ udef@*x3[4]=0x3d3
 - Обход: передать `VR_NOP="0xfffffe0008f3a91c"` в окружение QEMU (TCG-хук уже готов в `translate-a64.c`) или пропатчить через `patch_kc.py`.
 - После этого ядро переходит к запуску первого пользовательского процесса — `/sbin/launchd`.
 
+## Обновление 19.09 (34) — 🎉 ВЫХОД В USERSPACE: /sbin/launchd запущен, PID 2 (fsck) исполняется!
+**МОНУМЕНТАЛЬНЫЙ ПРОРЫВ: ИСПОЛНЕНИЕ ПОЛЬЗОВАТЕЛЬСКОГО КОДА В iOS НА X86-64 QEMU!**
+
+### 1. Шаг 1: Обход `rootvp not authenticated`
+- Запустили QEMU с хуком `VR_NOP="0xfffffe0008f3a91c"` (NOP на условный переход `cbnz w0, 0xfffffe0008f3ab78` в `bsd_init.c`).
+- Проверка `rootvp` пройдена полностью без единой ошибки!
+- XNU перешёл к вызову `kern_exec.c` для запуска `/sbin/launchd` и упал с паникой:
+  ```
+  udef@x1="panic"
+  udef@x2="Process 1 exec of %s failed, errno %d @%s:%d"
+  udef@*x3[3]="/sbin/launchd"
+  udef@*x3[4]=0x2
+  udef@*x3[5]="kern_exec.c"
+  ```
+- `errno 2` = `ENOENT` (No such file or directory): на системном томе не оказалось бинарника `/sbin/launchd`.
+
+### 2. Шаг 2: Анализ разметки APFS и наполнение SystemVolume
+- Причина `ENOENT`:
+  - `root2.img` в GPT-разметке содержит раздел 1 (начало со смещения 1 МБ / сектор 2048).
+  - Раздел 1 был отформатирован через `mkapfs -L Preboot` (`tools/mkroot.sh`), создавая два тома:
+    - Volume 0 (`Preboot`, role 0x10) — chứa файлы iBoot.
+    - Volume 1 (`System`, role 0x1) — оставался **пустым** (0 байт).
+  - Расшифрованный в сессии 32 образ `094-39278-029.dmg` (1.37 ГБ) лежал по сырому смещению 64 МБ, мимо разметки GPT Partition 1.
+- Решение (`tools/populate_rootfs.sh`):
+  1. Примонтировали том 1 `root2.img` через модуль `apfs.ko` (`linux-apfs-rw`) в WSL в режиме `readwrite`:
+     `mount -t apfs -o readwrite,vol=1 /dev/loopX /mnt_v1`
+  2. Примонтировали расшифрованный `094-39278-029.dmg`:
+     `mount -t apfs -o ro 094-39278-029.dmg /mnt_dmg`
+  3. Скопировали всё дерево файлов (2693 файла, 1.2 ГБ: `/bin`, `/sbin/launchd`, `/usr/lib/dyld`, `/System`, `/private` и т.д.) в Volume 1 (`System`).
+
+### 3. Шаг 3: Запуск и результат — USERSPACE ДОСТИГНУТ!
+- Запустили гостя с наполненным диском и `VR_NOP="0xfffffe0008f3a91c"`.
+- **РЕЗУЛЬТАТ:**
+  - Паника `Process 1 exec failed` ПОЛНОСТЬЮ ИСЧЕЗЛА!
+  - Ядро XNU успешно загрузило `/usr/lib/dyld` и выполнило `/sbin/launchd` как **PID 1**!
+  - `launchd` начал работу и породил дочерний процесс **PID 2**: `/sbin/fsck`!
+  - Лог паники ядра:
+    ```
+    udef@x1="panic"
+    udef@x2="%s %s -- exit reason namespace %d subcode 0x%llx description: %.800s"
+    udef@*x3[4]="fsck[2] exited"
+    udef@*x3[5]=0x3
+    ```
+  - `namespace 3` = `EXIT_REASON_CODESIGNING` (`CS_KILLED`).
+  - Процесс `fsck[2]` был остановлен подсистемой проверки подписей (AMFI / Code Signing validation), так как системный том или бинарники проверяются по TrustCache / политике Apple.
+
+### 4. Следующий шаг
+1. Отключить принудительное завершение по подписям (`CS_KILLED`):
+   - Передать boot-args в `/chosen` DeviceTree (`tools/dtpatch.py`):
+     `cs_enforcement_disable=1 amfi_allow_3p_launch_constraints=0 amfi_enforce_launch_constraints=0 amfi_enforce_cc_types=0 debug-enabled=1`
+   - Или пропатчить проверку CS в XNU/AMFI (как в `KernelPatchBsdInit.swift`).
+2. После снятия проверки `fsck` завершится успешно (или будет пропущен), и `launchd` перейдет к загрузке сервисов из `/System/Library/LaunchDaemons`!
+
