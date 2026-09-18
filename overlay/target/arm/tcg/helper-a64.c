@@ -822,19 +822,36 @@ void HELPER(gexit)(CPUARMState *env)
     /* vresearch101 debug: SPTM/TXM hand a panic to XNU as GEXIT with x0=4; dump its strings (read in GL regime) */
     if (env->xregs[0] == 4 && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
         qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic x1=0x%" PRIx64 " x2=0x%" PRIx64 " x3=0x%" PRIx64
-                      " elr=0x%" PRIx64 " sp=0x%" PRIx64 "\n", env->xregs[1], env->xregs[2],
-                      env->xregs[3], env->gxf.elr_gl[cur_el], env->xregs[31]);
-        for (int r = 1; r <= 3; r++) {
+                      " x4=0x%" PRIx64 " x5=0x%" PRIx64 " x6=0x%" PRIx64 " x7=0x%" PRIx64
+                      " elr=0x%" PRIx64 " sp=0x%" PRIx64 "\n",
+                      env->xregs[1], env->xregs[2], env->xregs[3],
+                      env->xregs[4], env->xregs[5], env->xregs[6], env->xregs[7],
+                      env->gxf.elr_gl[cur_el], env->xregs[31]);
+        if (env->xregs[1] == 0x66746e6972706bULL) {
+            qemu_log_mask(LOG_GUEST_ERROR, "gexit-kprintf tag detected\n");
+        }
+        for (int r = 1; r <= 7; r++) {
+            uint64_t ptr = env->xregs[r];
+            if (ptr < 0x10000 || ptr == 0x66746e6972706bULL) {
+                continue;
+            }
             GetPhysAddrResult res = {};
             ARMMMUFaultInfo fi = {};
             char buf[256] = {};
-            if (!get_phys_addr(env, env->xregs[r], MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi)) {
+            bool ok = !get_phys_addr(env, ptr, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi);
+            if (!ok && (ptr >= 0xfffffe0000000000ULL)) {
+                /* String is in EL1 kernel space; resolve using non-guarded EL1 MMU index */
+                ok = !get_phys_addr(env, ptr, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E1, &res, &fi);
+            }
+            if (ok) {
                 address_space_read(env_cpu(env)->as, res.f.phys_addr, MEMTXATTRS_UNSPECIFIED,
                                    buf, sizeof(buf) - 1);
                 for (int i = 0; buf[i]; i++) {
                     if (buf[i] < 0x20 || buf[i] > 0x7e) { buf[i] = '.'; }
                 }
-                qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic x%d -> \"%s\"\n", r, buf);
+                if (buf[0]) {
+                    qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic x%d -> \"%s\"\n", r, buf);
+                }
             }
         }
         /* SPTM (26.4 vresearch1) loaded-image table: u32 count @0x..d9060, 0x28-byte entries @0x..d9068;

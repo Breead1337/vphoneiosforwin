@@ -8823,11 +8823,27 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
         env->gxf.esr_gl[new_el] = env->exception.syndrome;
         /* vresearch101 debug: XNU -> SPTM/TXM calls (x16 = dispatch target) */
         if (!from_gl && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
-            static int ng;
-            if (ng++ < 12 || env->xregs[16] > 0xffff) {
+            static struct { uint64_t pc; uint64_t x16; int count; } sites[64];
+            static int num_sites;
+            int idx = -1;
+            for (int i = 0; i < num_sites; i++) {
+                if (sites[i].pc == env->pc && sites[i].x16 == env->xregs[16]) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx == -1 && num_sites < 64) {
+                idx = num_sites++;
+                sites[idx].pc = env->pc;
+                sites[idx].x16 = env->xregs[16];
+                sites[idx].count = 0;
+            }
+            if (idx == -1 || sites[idx].count++ < 5) {
                 qemu_log_mask(LOG_GUEST_ERROR, "genter#%d x16=0x%" PRIx64 " x0=0x%" PRIx64 " x1=0x%" PRIx64
-                              " x2=0x%" PRIx64 " pc=0x%" PRIx64 " lr=0x%" PRIx64 "\n", ng, env->xregs[16],
-                              env->xregs[0], env->xregs[1], env->xregs[2], env->pc, env->xregs[30]);
+                              " x2=0x%" PRIx64 " x3=0x%" PRIx64 " pc=0x%" PRIx64 " lr=0x%" PRIx64 "\n",
+                              (idx >= 0 ? sites[idx].count : 0), env->xregs[16],
+                              env->xregs[0], env->xregs[1], env->xregs[2], env->xregs[3],
+                              env->pc, env->xregs[30]);
             }
         }
         break;
