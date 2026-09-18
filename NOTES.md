@@ -748,3 +748,50 @@ udef@*x3[4]=0x3d3
 2. После того, как `fsck` вернет статус 0, `launchd` зафиксирует успешное завершение проверки файловой системы и перейдет к загрузке сервисов из `/System/Library/LaunchDaemons`!
 
 
+
+## Обновление 19.09 (36) — попытки продвижения дальше launchd/fsck
+Baseline после сессий 33-35 (rootfs через vmapple-virtio-blk-pci, VR_NOP rootvp,
+VR_MOV0 codesign, VR_B proc_exit): launchd(PID 1) запускает fsck(PID 2), тот
+получает SIGKILL от TXM (namespace=3 CODESIGNING), launchd userspace-panic
+`boot task failure: fsck - exited due to SIGKILL`.
+
+Проверенные варианты (все откатаны):
+1. **Patch /sbin/fsck entry → `mov w0,#0; ret`** — ломает CDHash, TXM SIGKILL
+   → новая паника **ядерная**: `TXM Unhandled synchronous exception taken from GL0
+   at pc 0xfffffe0031b3abf4`. Хуже, чем starting point.
+2. **`rm /sbin/fsck`** — execve ENOENT → launchd userspace-panic
+   `boot task failure: fsck - required boot task executable not found`.
+3. **Patch launchd (NOP на BL panic-abort в 0x100049ee0) + `ldid -S`** —
+   adhoc-подпись без TrustCache hash → PID 1 сам SIGKILL'ен →
+   ядерная паника `unexpected SIGKILL of init` (proc_exit.c:0xfffffe0008f9e334).
+4. **`cp /sbin/mount /sbin/fsck`** (валидная подпись, exit 0 без args) —
+   всё равно TXM Unhandled synchronous exception from GL0.
+
+Итог: **корневой блокер = TXM (Trusted Execution Monitor)**. GL0-паника «Unhandled
+synchronous exception» происходит **независимо** от валидности fsck-бинаря — что-то
+в эмуляции TXM ROM не покрывает нужный кейс sync-exception (page fault на
+`x0=0xfffffe004a240000 len=0x1c`). TXM в vresearch101 — эмулированное поведение
+из ROM `TXM.iphoneos.research.im4p`; его страницы кода не патчатся напрямую как
+XNU (у TXM свой slide и SPRR-регион).
+
+`VR_B/VR_MOV0/VR_NOP` в текущем виде (session 35) работают только для kernel
+(`pc >= 0xfffffe0000000000ULL && (vbar - 0xfffffe0008a5f000) alignment`). Хуки в
+user-space PID 1 требуют:
+- либо расширения `vr_static_match` на userspace slide (ASLR launchd base от
+  runtime лога, напр. `lr=0x1aede5e78 → slide=launchd_base-0x100000000`);
+- либо ldid re-sign + добавление CDHash в static TrustCache.
+
+Следующий шаг:
+(A) Реверс TXM sync-exception handler → починка эмуляции, чтобы GL0 не паниковал
+на неподдерживаемых сисвызовах / page faults. Долго (недели).
+(B) Расширить `translate-a64.c` для user-space patch с явным заданием ASLR-slide
+через переменную окружения (`VR_ULMASK`, `VR_USRSLIDE=…`). Быстро, но требует
+runtime-теста для получения slide launchd/dyld.
+(C) Собрать static TrustCache файл (`Boot!` blob), внести туда CDHash патченого
+launchd/fsck и подсунуть его iBoot через bdif/pflash. Требует парсера TrustCache
+формата (не сложно, есть в blacktop/ipsw).
+
+Baseline после этой сессии восстановлен: `/sbin/fsck` = оригинал (fsck.orig, md5
+5ae828fa34a82750905aeec5ca2c59a1), `/sbin/launchd` = оригинал (launchd.orig, md5
+7a5cc2dab8b6e0208f359d5af1044ec9). Прогон возвращается к session 35 паника
+`boot task failure: fsck - exited due to SIGKILL`.
