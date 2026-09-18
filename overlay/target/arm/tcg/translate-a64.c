@@ -10307,33 +10307,53 @@ static void aarch64_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
 
 /*
  * vresearch101 debug: VR_WATCH="0xVA,0xVA,..." = static kernelcache addresses; log regs when XNU executes them.
+ * VR_NOP  ="0xVA,0xVA,..." = static kernelcache addresses; translate as NOP (skip the real insn).
  * KASLR slide comes from VBAR_EL1 (XNU sets it to static 0xfffffe0008a5f000 + slide, 26.4 vresearch101).
  * Only TBs translated after VBAR is set are hooked.
  */
-static bool vr_watch_hit(CPUARMState *env, uint64_t pc)
+static int vr_static_match(CPUARMState *env, uint64_t pc, const char *var, uint64_t *w, int *n)
 {
-    static uint64_t w[32];
-    static int n = -1;
-    if (n < 0) {
-        const char *e = getenv("VR_WATCH");
-        n = 0;
-        while (e && *e && n < 32) {
+    if (*n < 0) {
+        const char *e = getenv(var);
+        *n = 0;
+        while (e && *e && *n < 32) {
             char *end;
-            w[n++] = strtoull(e, &end, 0);
+            w[(*n)++] = strtoull(e, &end, 0);
             e = *end ? end + 1 : end;
         }
     }
     uint64_t vbar = env->cp15.vbar_el[1];
-    if (!n || ((vbar - 0xfffffe0008a5f000ULL) & 0x3fff) || vbar < 0xfffffe0000000000ULL) {
-        return false;
+    if (!*n || ((vbar - 0xfffffe0008a5f000ULL) & 0x3fff) || vbar < 0xfffffe0000000000ULL) {
+        return 0;
     }
     uint64_t st = pc - (vbar - 0xfffffe0008a5f000ULL);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < *n; i++) {
         if (w[i] == st) {
-            return true;
+            return 1;
         }
     }
-    return false;
+    return 0;
+}
+
+static bool vr_watch_hit(CPUARMState *env, uint64_t pc)
+{
+    static uint64_t w[32];
+    static int n = -1;
+    return vr_static_match(env, pc, "VR_WATCH", w, &n);
+}
+
+static bool vr_nop_hit(CPUARMState *env, uint64_t pc)
+{
+    static uint64_t w[32];
+    static int n = -1;
+    return vr_static_match(env, pc, "VR_NOP", w, &n);
+}
+
+static bool vr_mov0_hit(CPUARMState *env, uint64_t pc)
+{
+    static uint64_t w[32];
+    static int n = -1;
+    return vr_static_match(env, pc, "VR_MOV0", w, &n);
 }
 
 static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
@@ -10380,6 +10400,17 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     if (vr_watch_hit(env, pc)) {
         gen_a64_update_pc(s, 0);
         gen_helper_vr_watch(tcg_env, tcg_constant_i64(pc));
+    }
+    if (vr_nop_hit(env, pc)) {
+        /* skip this insn: treat as NOP for guest */
+        s->base.pc_next = pc + 4;
+        return;
+    }
+    if (vr_mov0_hit(env, pc)) {
+        /* replace this insn with "mov x0, #0" — useful to short-circuit `bl <checker>; cbnz w0, panic` */
+        tcg_gen_movi_i64(cpu_reg(s, 0), 0);
+        s->base.pc_next = pc + 4;
+        return;
     }
     insn = arm_ldl_code(env, &s->base, pc, s->sctlr_b);
     s->insn = insn;

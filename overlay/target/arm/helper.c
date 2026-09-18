@@ -8612,11 +8612,16 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
     if (cs->exception_index == EXCP_UDEF && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
         static int once;
         if (once++ < 8) {
+            uint64_t slide_static = env->cp15.vbar_el[1] - 0xfffffe0008a5f000ULL;
             qemu_log_mask(LOG_GUEST_ERROR,
                           "udef@entry pc=0x%" PRIx64 " lr=0x%" PRIx64 " x16=0x%" PRIx64
-                          " x17=0x%" PRIx64 " el=%d g=%d\n",
+                          " x17=0x%" PRIx64 " el=%d g=%d slide=0x%" PRIx64
+                          " static-pc=0x%" PRIx64 " static-lr=0x%" PRIx64 "\n",
                           env->pc, env->xregs[30], env->xregs[16], env->xregs[17],
-                          cur_el, arm_is_guarded(env));
+                          cur_el, arm_is_guarded(env), slide_static,
+                          env->pc - slide_static,
+                          (env->xregs[30] | (env->xregs[30] >> 55 & 1 ? 0xff00000000000000ULL : 0))
+                          - slide_static);
             /* PA of the faulting pc + frame-pointer backtrace (the monitor's debug walk can't see XNU) */
             ARMMMUIdx idx = arm_mmu_idx(env);
             GetPhysAddrResult r = {};
