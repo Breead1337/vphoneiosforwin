@@ -471,6 +471,20 @@ slid → берём из `udef@x1="panic"`. У нас unslid "panic" = 0xfffffe0
 (b) залогировать kprintf аргументы (SPTM print через `gexit-panic img[N]` — сейчас все нули, значит
 кто-то вызвал kprintf с пустой строкой; надо снять аргументы x0..x2 в момент захода в SPTM print gate).
 
+Итог сессии 28+ (T=420s): XNU НЕ паникует, но **зациклился на одном GENTER**:
+```
+ELR_GL 0xfffffe004bb85340 x 5836 (=98% всех GENTER'ов)
+ESR 0x3f/0xfe010000       x 5976 (SPTM syndrome)
+```
+Остальные ELR — 12x 0xfffffe004bb58808, 9x 0xfffffe004bb587fc, 33x EL1-return 0xfffffe004b4cc1d8, единицы других.
+Значит XNU крутит стабильный spin-wait цикл, где основное действие — GENTER в один и тот же gate SPTM.
+Без прогресса до APFS/launchd, но и без падения. Похоже на busy-wait на память-флаг «SEP up», который
+мы не установили (мы вернули из SEP init `0=success` но реальный state XNU для «SEP ready» не поставили).
+Дальнейший ход: (c) идентифицировать функцию, содержащую EL1 сайт что генерит эти GENTER'ы —
+слайд XNU: unslid `panic` VA = 0xfffffe00070433dd, slid можно взять из ближайшего `gexit-panic x1=0x66746e6972706b` контекста
+следующего прогона; (d) прочитать что XNU там читает из памяти и что ожидает; (e) при необходимости
+DMA-выставить нужный флаг из vr-sep-mbox.
+
 ## Обновление 18.09 (27) — Group 0 (FIQ) фильтр установлен, GIC отдаёт FIQ, но SEP всё равно не проходит
 Реализовано в `overlay/hw/vmapple/vresearch101.c` (+~50 строк): фильтр `MemoryRegion` приоритетом 1
 поверх `dist_base + 0x84` (IGROUPR[SPI 32..63]). На запись сбрасывает биты 20/21 (INTID 52/53 = SEP) и
