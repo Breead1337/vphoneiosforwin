@@ -1233,3 +1233,49 @@ AMFI evaluate находит inconsistency (наш CS-bypass вернул "OK" �
 
 Все обходы session 45/46 откачены. run_userspace.sh обратно к session 43
 конфигурации (VR_RET0=0xfffffe0007d56dd4).
+
+## Обновление 19.09 (46b) — CDHash fsck УЖЕ валиден в TC + boot tasks отсутствуют
+Разобрал CS-blob оригинального fsck:
+- `LC_CODE_SIGNATURE @ 0xcc80` (Mach-O), size `0x48d0`.
+- CS SuperBlob: `magic=0xfade0cc0`, 3 blobs (CodeDirectory, Requirements, +?).
+- CodeDirectory: v0x20400, flags=0x2 (adhoc-ish), hashSize=32 (SHA256),
+  pageSize=4096, nCodeSlots=13, codeLimit=0xcc80, ident="com.apple.fsck".
+- Первый code hash slot = `SHA256(fsck[0:0x1000])` — совпадает.
+- **CDHash = `094633c65a0ef15192df67fd4da2d74d14687b0d`**.
+
+**Этот CDHash УЖЕ есть в TC** (slot #5, hashtype=49154=0xC002, flags=0x3).
+Значит AMFI пропускает оригинальный fsck без bypass. Проблема НЕ в CDHash.
+
+Обыскал root2.img на предмет hardwired boot tasks launchd:
+- `MSUEarlyBootTask` — нет
+- `MobileAssetEarlyBootTask` — нет
+- `darwinos-boot-task` — нет
+- `auearlyboot` — нет
+
+Launchd hardwired-tasks (в binary) ищет их бинари → не находит → как-то
+обрабатывает и в итоге SIGKILL init. Строка в launchd:
+```
+"%s not set, Skipping boot-task: %s"
+```
+намекает что есть env/sysctl-guard, но что-то заставляет launchd не
+skip'ать. Нужен реверс launchd binary — секции boot-tasks list.
+
+**Session 47 (реальный next)**:
+1. Найти в _launchd_ binary точку "hardwired boot task loop": xref к
+   "MSUEarlyBootTask" / "auearlyboot" строкам → функция итератор.
+2. Проверить condition в этой функции: возможно `getenv/sysctlbyname` который
+   у нас всегда fails → launchd exits.
+3. Если condition = невозможен без изменений → patch launchd:
+   заменить task-loop на `nop` (без CS ломания используя LC_CODE_SIGNATURE
+   swap на adhoc). Пересчитать CDHash launchd → добавить в TC.
+4. Или альтернатива: собрать minimal iOS rootfs с этими binary-ами (взять
+   из старой iOS beta или compile-out тасксы из launchd source).
+
+Тактически: **тупик без глубокого реверса launchd** или без пересборки
+rootfs. Прогресс sessions 40-46 достиг: TC-в-DT, HW AF EL0, AMFI-bypass;
+fsck выполняется, launchd exec-ит следующие tasks — они fail. Runtime-хуки
+исчерпаны на текущей стенке.
+
+**Файлы session 46-46b** (закоммичено в 1907722+):
+- `tools/run_userspace.sh` — только vnode_check_signature bypass, остальное
+  откачено.
