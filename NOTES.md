@@ -1202,3 +1202,34 @@ Panic-func обход **не помог**, откатили из run_userspace.s
   добавление new entry в `_work/tc/os.trst.bin`. Тогда fsck-stub c
   валидной подписью проходит AMFI **правильно** (без bypass), evaluate.c
   доволен. Далее — то же для launchd (если его тоже нужно стабать).
+
+## Обновление 19.09 (46) — NOP на shenanigans! panic → snova SIGKILL init
+2 xref-а к "shenanigans!" @evaluate.c (bl panic@0xfffffe00092b12e8):
+- `0xfffffe000885cfc4` — line 0x137b (наш случай)
+- `0xfffffe000885cff0` — line ~0x137d/f
+
+VR_NOP на оба `bl` — panic не вызывается, evaluate.c продолжает. Метрики
+идентичны (47003 SVC), но **вернулась паника "unexpected SIGKILL of init"**.
+
+**Значит shenanigans и SIGKILL init — два выхода одного детектора**:
+AMFI evaluate находит inconsistency (наш CS-bypass вернул "OK" для binary
+с CDHash которого нет в TC), затем:
+- либо панике "shenanigans!" (если evaluate инвариант нарушен),
+- либо посылает `psignal(SIGKILL)` виновнику (если policy path другой).
+
+Если виновник = init → XNU панике "unexpected SIGKILL of init".
+
+Обходы AMFI evaluate/panic-func бесполезны — root cause **отсутствие
+валидного CDHash в TC для пропатченных бинарей** (или для наших любых
+бинарей). Ленивые точечные патчи упираются в защитный invariant.
+
+**Session 47 — реальный next-step**: `tools/patch_cs.py` — SHA256 CD blob
+пересчёт (см. session 42 план). Готовые кирпичи:
+- LC_CODE_SIGNATURE @ 0xcc80, size 0x48d0 (fsck) — Mach-O parsed already.
+- Формат CS SuperBlob: CSMAGIC_EMBEDDED_SIGNATURE=0xFADE0CC0, CodeDirectory
+  blob type CSMAGIC_CODEDIRECTORY=0xFADE0C02.
+- CDHash = SHA256(CD blob)[0:20], hash slots в CD (SHA256 per 4KB page).
+- TC v2 entry = 24 bytes: 20 cdhash + 2 hashtype(=2 для SHA256[20]) + 2 flags.
+
+Все обходы session 45/46 откачены. run_userspace.sh обратно к session 43
+конфигурации (VR_RET0=0xfffffe0007d56dd4).
