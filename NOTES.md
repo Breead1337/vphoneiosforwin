@@ -820,3 +820,39 @@ user-space pc (< 0x1000000000) хук использует `vr_uslide_auto` (а�
 
 Следующий шаг: NOP на `Halt/Restart Timed Out` panic и/или эмуляция pvpanic
 `shutdown` regу-out. Или (правильнее) — вовсе не давать launchd умирать.
+
+## Обновление 19.09 (38) — рекордный wall: 51220 SVC, ядро уходит в halt-path
+Добавил `VR_RET0="0xfffffe00092c4af0"` (обход `Halt/Restart Timed Out` panic-wrapper
+в `IOPlatformExpert.cpp:0x374`). Ядро прошло дальше и упёрлось в:
+
+**`REQUIRE fail: kIOReturnSuccess == result` @ AppleSEPBooter::_captureiBICKCV()
+@ AppleSEPBooter.cpp:0xb9**
+
+Это второй заход в SEP boot (после чего-то — возможно watchdog init повторно
+дёргает `_captureiBICKCV` после halt). Наш ответ на op 30/31 (PR#6) не считается
+`kIOReturnSuccess`.
+
+Попытка добавить session-28 SEP-bypass через `VR_RET0="…0007eb5c7c,…0007eafb20"`
++ `VR_MOV0="…0007eaf5f8,…"` — регресс: TXM GL0 sync exception возвращается,
+SVC падает до 47517 (было 51220). Значит SEP-handlers из PR#6 конфликтуют с
+session-28 VR_RET0 путём — они делают то же самое разными путями.
+
+Конфигурация с рекордом (session 37 ret0):
+```
+VR_NOP="0xfffffe0008f3a91c"                                       # rootvp auth
+VR_MOV0="0xfffffe0008c19a28"                                      # CS_KILLED bypass
+VR_RET0="0xfffffe00092bfa0c,0xfffffe00092c4af0"                   # proc_exit + halt panic
+VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0"
+```
+
+Следующие пути:
+- Реверс `_captureiBICKCV` REQUIRE — какое значение SEP должен вернуть на op=31
+  чтобы XNU принял (не generic `0x5A5A0000|tag<<8|1`, а специфический KCV
+  хеш/nonce). Требует чтения AppleSEPBooter.cpp:0xb9 контекста и правки
+  overlay/hw/vmapple/vr-sep-mbox.c.
+- Или прервать halt-path раньше, чтобы XNU вообще не вызывал `_captureiBICKCV`
+  повторно.
+- Или собрать static TrustCache и подсунуть через DT (`chosen/static-trust-caches`)
+  чтобы TXM изначально доверял всем нашим бинарям — тогда SEP KCV может не понадобиться.
+
+Baseline восстановлен в run_upatch.sh (без SEP bypass).
