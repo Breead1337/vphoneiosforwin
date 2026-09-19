@@ -856,3 +856,50 @@ VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb
   чтобы TXM изначально доверял всем нашим бинарям — тогда SEP KCV может не понадобиться.
 
 Baseline восстановлен в run_upatch.sh (без SEP bypass).
+
+## Обновление 19.09 (39) — где остановились, план на возобновление
+**Правильный next-step (по договорённости с юзером): установить static TrustCache
+через DeviceTree.** Это фундаментальнее чем runtime-хуки: если TXM/AMFI
+изначально доверяют всем нашим бинарям, то все дальнейшие panic-пути (fsck
+SIGKILL, `_captureiBICKCV` REQUIRE, halt-timeout из-за launchd exit) устраняются
+одновременно.
+
+Что уже есть:
+- `fw/cloud/Firmware/094-39278-029.dmg.aea.trustcache` (6287 байт, IM4P с
+  payload type `trst`) — TC для основного OS-контейнера (тот, что мы
+  расшифровали в root2.img).
+- `fw/cloud/Firmware/094-39914-031.dmg.trustcache` (7967 байт, тот же формат) —
+  TC для Restore RamDisk (не нужен нам).
+
+Что нужно сделать:
+1. Снять IM4P-обёртку с `094-39278-029.dmg.aea.trustcache` (ASN.1 DER, tag `trst`
+   payload). Опыт есть — `tools/ipsw.exe img4 im4p extract` даст raw blob.
+2. Найти в kernelcache где `AppleImage4` / AMFI регистрирует static TC. Возможно
+   в `com.apple.driver.AppleImage4` через IOKit provider или через DT-property
+   `/chosen/trust-cache`. Смотреть: `strings kernelcache | grep -i trust`,
+   `disass AppleImage4::_trustCache_something`.
+3. В `tools/dtpatch.py` добавить property в `/chosen`:
+   - Возможно `static-trust-caches` (uint64 = phys addr blob).
+   - Или новый child node `/chosen/memory-map/TrustCache` с {addr, size}.
+   - Или через `manifest-properties` -> `TrustCache` binary blob.
+4. Записать TC blob в память guest'а через iBoot bdif (like кернелкеш).
+5. Прогон — TXM CDHash lookup находит наш launchd/fsck/etc → всё exec-ится
+   валидно → нет SIGKILL/SIGSEGV → launchd грузит LaunchDaemons.
+
+Точка возобновления:
+- `tools/run_userspace.sh` содержит рабочую конфигурацию сессии 37 (halt-RET0),
+  которая доходит до halt-path (51220 SVC) и потом падает на `_captureiBICKCV`
+  REQUIRE.
+- Auto-slide работает (snap 64K), пропатчено в
+  `overlay/target/arm/{tcg/translate-a64.c,helper.c}`.
+- root2.img содержит рабочий APFS с наполненным Volume 1 (2693 файла iOS 26.4),
+  aux.test и fsck/launchd — исходные (см. `/tmp/{fsck.orig,launchd.orig}` md5).
+
+При возобновлении: **сразу к TC через DT**. Если TC не идёт легко, план B —
+пропатчить op=31 handler в `overlay/hw/vmapple/vr-sep-mbox.c` под реальный
+формат KCV, читая `_captureiBICKCV @ AppleSEPBooter.cpp:0xb9`.
+
+**Why:** пунктирный runtime-hook подход дошёл до 51k SVC + halt-path, но
+каждый обход открывает следующую панику. TC — систематическое решение.
+**How to apply:** возобновление → извлечь `.trustcache` payload → найти static-TC
+registration в XNU → dtpatch.py → прогон.
