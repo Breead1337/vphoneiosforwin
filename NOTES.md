@@ -1096,3 +1096,40 @@ init/PID1 нельзя убивать. Скорее всего:
 - `tools/inject_tc_dt.sh` — убрал по умолчанию `VR_BOOTARGS` (не работал).
 - fsck stub (session 42, `tools/stub_fsck.sh`) активирован — нужен после
   каждого re-mount root2.img.
+
+## Обновление 19.09 (44) — launchd прошёл fsck, boot task list найден
+Разбор launchd binary:
+- `/System/Library/xpc/launchd.plist` — только LaunchDaemons/AppExtensions, boot tasks НЕ там.
+- Boot task names зашиты в binary: **fsck**, **MSUEarlyBootTask**,
+  **MobileAssetEarlyBootTask**, **darwinos-boot-task**, **auearlyboot**.
+- Строки: "Doing boot task", "Finished boot task", "Skipping boot-task",
+  "Unable to find boot task block for: %s", "boot task has no program".
+
+Логи прогона session 43 показывают: **всего 1 real_el0@fault**, и тот подозрительный
+(`pc=0x1182c4 sp=0xfffffc00002fbcd0` — sp в kernel-mapped диапазоне, не EL0).
+После fsck-stub нет реальных user-space faults. Значит либо launchd
+запускает следующие tasks и они работают, либо тихо exit-ит.
+
+Скорее всего: SIGKILL init от нашего собственного AMFI-bypass. Найдена
+строка в `mac_vnode_check_signature`:
+```
+"MAC hook returned no error, but status is claimed to be fatal? path: '%s', ..."
+```
+Наш VR_RET0 хук вернул 0 (no error) но не сбросил out-параметр
+`fatal_failure_desc_len` / `fatal_failure_desc`. Если он остался в стеке
+как ненулевой мусор — MAC framework интерпретирует "fatal" и убивает
+процесс через `psignal(SIGKILL)`.
+
+**Session 45 (следующая)**:
+1. Сузить AMFI-bypass: **VR_MOV0 в конкретный call site**
+   `bl <hook>` @ `0xfffffe000928c500` в `mac_vnode_check_signature`
+   (@ VA `0xfffffe000928c450`). Тогда MAC framework вызовет реальный
+   hook (или наш patched-хук), но результат обнулим ПОСЛЕ вызова, не
+   на входе. Из плюсов — реальный hook правильно очистит out-params.
+2. Или: реверс сигнатуры `AppleMobileFileIntegrity::vnode_check_signature`
+   в стиле `int (vnode_t, ..., int *fatal_failure_desc_len, char
+   **fatal_failure_desc)` — сделать VR_RET0 который зануляет
+   `*x5=0, *x6=0` перед `mov x0,#0; ret`. Требует custom TCG code.
+3. Или найти где именно psignal init (SIGKILL). Строка "unexpected
+   SIGKILL of init" в kc → xref → функция → каких стек-конфигурации
+   вызывает.
