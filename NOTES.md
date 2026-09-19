@@ -1317,3 +1317,46 @@ then set x0=0" или логирование psignal — для диагност
 - Launchd exec-ит tasks (или что-то делает после fsck)
 - SIGKILL init — стенка, требующая либо диагностики psignal либо
   ULTRA-точечного patch AMFI (out-params).
+
+## Обновление 19.09 (48) — VR_WATCH подтвердил caller, но NOP на bl-panic ушёл в shenanigans
+Через VR_WATCH=0xfffffe0008f9d8a4 (panic-func "unexpected SIGKILL of init")
+поймали одно попадание с `lr=0xfffffe0008f6f218` — значит caller = функция
+`0xfffffe0008f6eae0` (offset 0x738), BSD signal path. Дизасм показал:
+
+```
+0xfffffe0008f6f1f4: bl <check @ 0xfffffe0008f70018>
+0xfffffe0008f6f1fc: cbz w0, ...f6f71c            ← если check ok, skip panic
+0xfffffe0008f6f200: mov x1, #0
+0xfffffe0008f6f204: mov x2, #0
+0xfffffe0008f6f208: mov w3, #0
+0xfffffe0008f6f20c: mov w4, #9                    ← SIGKILL
+0xfffffe0008f6f210: mov x5, x22
+0xfffffe0008f6f214: bl panic-init                 ← "unexpected SIGKILL of init"
+```
+
+NOP на `bl @ 0xf6f214` → **обошли** SIGKILL init panic (VR_WATCH не сработал,
+значит функция не вызывалась). Но **вернулась shenanigans!** @evaluate.c:0x137b
+(session 45 déjà vu). Значит оба path (SIGKILL init и shenanigans) — два
+исхода одного и того же AMFI evaluate детектора.
+
+**Замкнутый круг**:
+- NOP shenanigans → SIGKILL init (session 46)
+- NOP SIGKILL init → shenanigans (session 48)
+- Оба одновременно скипнуть = нужен NOP на весь BL panic-func (10 callers)
+  или на bl @ evaluate.c:panic (2 callers) — то есть много точечных, каждый
+  открывает следующий invariant.
+
+**Реальный next-step для дальнейшего прогресса runtime-хуками уже не
+работает.** Нужно либо:
+1. Полноценно пересчитывать CDHash-ы для всех бинарей которые launchd
+   пытается запустить (fsck уже валиден в TC session 46b; **какие ещё** —
+   в этой ветви cloudOS 26.4 нет MSU*, MobileAsset*, darwinos-*,
+   auearlyboot). Смотреть launchd `do_boot_task` logic для skip-condition
+   каждого task.
+2. Пересобрать rootfs с полными boot-task бинарями из **полной** iOS
+   сборки (не cloudOS): взять из iPhone/iPad IPSW.
+3. Или патч AMFI kext на "always allow" — реверс `evaluate.c` в
+   `AppleMobileFileIntegrity` kernelcache, найти check-функцию и обнулить.
+
+**10 сессий (40-48)** прошли за один заход, весь прогресс в GitHub.
+Runtime-хуки исчерпаны на AMFI evaluate стенке.

@@ -8,6 +8,9 @@ TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for v
 rm -f $W/us.uart $W/us.log
 export VR_NOP="0xfffffe0008f3a91c"
 # 0xfffffe0008f3a91c — rootvp auth (session 35).
+# Session 48 пробовал ещё NOP на bl panic("SIGKILL init") @ 0xfffffe0008f6f214
+# — обошли SIGKILL init, но AMFI evaluate шлёт shenanigans (session 45 déjà vu).
+# Оба path (SIGKILL и shenanigans) — один AMFI детектор, обход исчерпан.
 # Session 46 пробовал ещё 2 NOP на shenanigans! panic (0xfffffe000885cfc4/cff0)
 # — вернулись к "SIGKILL of init". Root cause — AMFI evaluate детектит
 # несоответствие CDHash с TC. Session 47 = реальный CDHash пересчёт.
