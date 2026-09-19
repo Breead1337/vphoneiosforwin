@@ -1169,3 +1169,36 @@ delivery, не через MAC/CS.
 3. Или включить `boot-args=debug=0x14e -v serial=3` через *BootArgs
    struct* (не через DT — надо реверсить как iBoot конструирует
    BootArgs, чтобы XNU реально печатал boot messages на UART).
+
+## Обновление 19.09 (45) — VR_RET0 на panic-func = "shenanigans!" (AMFI evaluate.c)
+Попытка скипнуть "unexpected SIGKILL of init" через VR_RET0 на panic wrapper
+@ `0xfffffe0008f9d8a4`. Метрики сохранились (47003 SVC, 10 DA, 0 PA), панику
+скипнули, но открылась НОВАЯ:
+```
+"shenanigans!" @evaluate.c:0x137b
+```
+Apple-жаргон для AMFI evaluate/policy sanity check. Наш VR_RET0 на
+`vnode_check_signature` возвращает "no error" для КАЖДОГО бинаря, включая
+такие которые должны быть отвергнуты — AMFI evaluate детектит несоответствие
+между "policy said OK" и "actual entitlements" и панике.
+
+Значит **широкий CS-bypass не проходит дальше** — надо более узкий:
+1. VR_MOV0 на конкретный `bl <vnode_check_signature>` в
+   `mac_vnode_check_signature` @ VA `0xfffffe000928c500`. Тогда:
+   - реальный AMFI hook вызывается (правильно проставляет out-params)
+   - но его x0 result затирается на 0 → caller думает "OK"
+   - out-params остаются валидными → evaluate.c не паникует.
+2. Или добавить в TC blob CDHash-ы для КАЖДОГО бинаря (fsck, launchd,
+   MSU*, ...) — пересчитать CDHash-ы, полноценно.
+3. Или откатить AMFI bypass и вернуться к `AF fix + fsck stub только`
+   (session 41 + stub). Тогда fsck stub тоже требует CDHash пересчёт
+   (session 42 тупик — вернуться).
+
+Panic-func обход **не помог**, откатили из run_userspace.sh (осталось
+только vnode_check_signature bypass).
+
+**Session 46 (реальный next-step)**:
+- Реализовать `tools/patch_cs.py` — SHA256 CD blob пересчёт для fsck +
+  добавление new entry в `_work/tc/os.trst.bin`. Тогда fsck-stub c
+  валидной подписью проходит AMFI **правильно** (без bypass), evaluate.c
+  доволен. Далее — то же для launchd (если его тоже нужно стабать).
