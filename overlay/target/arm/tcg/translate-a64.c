@@ -10327,15 +10327,31 @@ static int vr_static_match(CPUARMState *env, uint64_t pc, const char *var, uint6
             e = *end ? end + 1 : end;
         }
     }
+    if (!*n) return 0;
     uint64_t vbar = env->cp15.vbar_el[1];
-    if (!*n || ((vbar - 0xfffffe0008a5f000ULL) & 0x3fff) || vbar < 0xfffffe0000000000ULL) {
-        return 0;
+    uint64_t st_k = 0, st_u = 0;
+    int have_k = 0, have_u = 0;
+    if (vbar >= 0xfffffe0000000000ULL && !((vbar - 0xfffffe0008a5f000ULL) & 0x3fff)) {
+        st_k = pc - (vbar - 0xfffffe0008a5f000ULL); have_k = 1;
     }
-    uint64_t st = pc - (vbar - 0xfffffe0008a5f000ULL);
+    /* ponytail: user-space hook via VR_USLIDE=<launchd ASLR slide>. Auto-detected
+     * from first EL0 entry when unset; helper.c fills VR_USLIDE_AUTO. */
+    static uint64_t uslide = 0;
+    static int uinit = 0;
+    if (!uinit) {
+        uinit = 1;
+        const char *e = getenv("VR_USLIDE");
+        if (e && *e) uslide = strtoull(e, NULL, 0);
+    }
+    /* runtime auto: helper.c publishes it via a global once EL0 fires */
+    extern uint64_t vr_uslide_auto;
+    uint64_t us = uslide ? uslide : vr_uslide_auto;
+    if (us && pc < 0x1000000000ULL) { /* user VA range */
+        st_u = pc - us; have_u = 1;
+    }
     for (int i = 0; i < *n; i++) {
-        if (w[i] == st) {
-            return 1;
-        }
+        if (have_k && w[i] == st_k) return 1;
+        if (have_u && w[i] == st_u) return 1;
     }
     return 0;
 }

@@ -795,3 +795,28 @@ Baseline после этой сессии восстановлен: `/sbin/fsck`
 5ae828fa34a82750905aeec5ca2c59a1), `/sbin/launchd` = оригинал (launchd.orig, md5
 7a5cc2dab8b6e0208f359d5af1044ec9). Прогон возвращается к session 35 паника
 `boot task failure: fsck - exited due to SIGKILL`.
+
+## Обновление 19.09 (37) — 🎉 user-space хуки заработали, ядро дошло до Halt/Restart
+Расширил `vr_static_match` в `overlay/target/arm/tcg/translate-a64.c`: при
+user-space pc (< 0x1000000000) хук использует `vr_uslide_auto` (авто-детект по
+первой EL0 exception, snap на 64 KB — 4K было мимо launchd base) или явный
+`VR_USLIDE` из env. `overlay/target/arm/helper.c` теперь публикует
+`vr_uslide_auto` из первого EL0 pc.
+
+Прогоны сессии 37:
+1. `VR_NOP="…f3a91c,0x100049ee0"` — auto slide = 0x4c50000 (совпал с launchd base
+   0x100c50000). TXM GL0 ошибка **исчезла**, launchd панике **userspace panic:
+   boot task failure: fsck - exited due to SIGSEGV** (нормальная userspace-паника
+   вместо кернел-GL0).
+2. `VR_NOP="…f3a91c,0xfffffe00092bfad0"` (NOP на `bl panic` в kernel wrapper
+   `userspace panic: %s`). Ядро прошло, но упало в **Kernel instruction fetch
+   abort** (после NOP unreachable-код был исполнен и запортился).
+3. `VR_RET0="0xfffffe00092bfa0c"` (пропустить всю функцию `proc_exit_userspace
+   _panic` через mov w0,#0; RET по caller-LR). Ядро прошло дальше и упёрлось в
+   **`IOPlatformExpert.cpp:0x374 "Halt/Restart Timed Out"`**! Это **halt-path** —
+   значит launchd/fsck отработали (или умерли аккуратно), ядро попыталось
+   перезагрузиться, но платформа `vresearch101` не отвечает на halt.
+   Метрики: 51199 SVC, 31246 GENTER, 233 prefetch — рекорд по userland-активности.
+
+Следующий шаг: NOP на `Halt/Restart Timed Out` panic и/или эмуляция pvpanic
+`shutdown` regу-out. Или (правильнее) — вовсе не давать launchd умирать.

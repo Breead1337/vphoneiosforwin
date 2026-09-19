@@ -8595,6 +8595,11 @@ static bool syndrome_is_sync_extabt(uint32_t syndrome)
     }
 }
 
+/* ponytail: user-space slide auto-detect for VR_MOV0/VR_NOP hooks in userland.
+ * Set on the very first real EL0 exception (usually the first SVC of PID1 launchd
+ * or a data-abort in dyld) if VR_USLIDE env is unset. */
+uint64_t vr_uslide_auto = 0;
+
 /* Handle exception entry to a target EL which is using AArch64 */
 static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
 {
@@ -8638,6 +8643,13 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                               " far=0x%" PRIx64 " esr=0x%" PRIx64 " ec=0x%x\n",
                               el0_total_cnt, cs->exception_index, env->pc, env->xregs[31], env->xregs[30],
                               env->cp15.far_el[1], env->cp15.esr_el[1], ec);
+            }
+            /* ponytail: auto-detect launchd (PID 1) slide from first real EL0 pc. */
+            if (!vr_uslide_auto && env->pc >= 0x100000000ULL && env->pc < 0x1000000000ULL) {
+                vr_uslide_auto = (env->pc & ~0xffffULL) - 0x100000000ULL;
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "vr_uslide_auto = 0x%" PRIx64 " from first EL0 pc=0x%" PRIx64 "\n",
+                              vr_uslide_auto, env->pc);
             }
         }
     }
