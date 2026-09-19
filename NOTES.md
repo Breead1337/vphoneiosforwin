@@ -954,3 +954,46 @@ XNU не ставит AF в software fault handler → infinite AF-fault loop �
 - `tools/run_userspace.sh` — `VR_TRUSTCACHE` export.
 
 Where-we-are: session 41 стартует с TCG AF hardware update.
+
+## Обновление 19.09 (41) — HW Access Flag update для EL0 на apple-gxf
+Гипотеза NOTES-40 подтверждена: XNU/dyld/fsck на apple-gxf полагаются на
+Apple-IMPDEF поведение "AF always updated in HW" даже при TCR_ELx.HA=0.
+Без этого — infinite AF-fault loop в user-space (ESR=0x920000_4b/_47).
+
+**Фикс** в `overlay/target/arm/ptw.c` (после `if (!(descriptor & (1 << 10)))`):
+```c
+bool apple_impdef_hw_af = arm_feature(env, ARM_FEATURE_GXF)
+                          && regime_is_user(env, mmu_idx);
+if (param.ha || apple_impdef_hw_af) {
+    new_descriptor |= 1 << 10;    /* AF */
+}
+```
+
+Итерации:
+1. **Первый заход — force AF для ВСЕХ regime**: DA 759 → **36**, PA 233 → **27**
+   (в 20× меньше!). Но новый крах: **"[TXM] Unhandled synchronous exception
+   taken from GL0 at pc 0xfffffe00294aabf4"**. Причина: kernel/SPTM/TXM PT
+   лежат в SPTM-owned pages; HW AF update пишет в них минуя GENTER →
+   SPTM ловит нарушение invariant и паникает.
+2. **Второй заход — force AF ТОЛЬКО для user regime** (`regime_is_user`):
+   TXM GL0 crash ушёл. DA = 423 (лучше baseline 759, хуже 36-первого захода
+   — kernel PT снова через SW-AF path). fsck теперь **SIGKILL** (не SIGSEGV).
+
+**Прогресс сессии**:
+- Первый valid userspace slide (fsck) больше не крашится сразу на AF.
+- Осталось: последние el0_tail показывают `pc=0x1a7f63030 far=0xd00cc0000`
+  — dyld shared cache код с wild pointer (13 GiB). Скорее всего **ASLR slide
+  fsck отличается от launchd** (auto-detect в
+  `overlay/target/arm/helper.c` заточен под первый EL0 exception = launchd
+  base 0x100c50000, слайд 0x4c50000).
+
+**Следующие шаги (session 42)**:
+1. Расширить auto-slide на per-process: ловить `mach_kernel_load` / `bsd_exec`
+   entry в XNU и обновлять slide при каждом exec.
+2. Или проще — pin fsck slide через VR_UBASE=<addr> когда launchd оставляет
+   его в scratch страничке.
+3. Реверс `0x1a7f63030` в извлечённом dsc: узнать что за libSystem-функция
+   и какую структуру она разыменовывает по 0xd00cc0000.
+
+**Файлы session 41** (закоммичено):
+- `overlay/target/arm/ptw.c` — EL0-only Apple-IMPDEF HW AF update.

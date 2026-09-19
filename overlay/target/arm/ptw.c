@@ -2079,7 +2079,20 @@ static bool get_phys_addr_lpae(CPUARMState *env, S1Translate *ptw,
          * Otherwise, pass the access fault on to software.
          */
         if (!(descriptor & (1 << 10))) {
-            if (param.ha) {
+            /*
+             * Apple SoCs (A12+/vresearch1 GXF) unconditionally update AF in HW
+             * for EL0 stage-1 translations even when TCR_ELx.HA=0 — XNU's user
+             * PTEs ship AF=0 and rely on this Apple-IMPDEF behaviour. Without
+             * this fsck & the dyld shared cache spin in an infinite AF-fault
+             * loop (session 40 → 41 finding).
+             *
+             * ponytail: only for EL0 (user) accesses — kernel/SPTM/TXM page
+             * tables must keep the standard SW-AF path or GL0 explodes with
+             * "Unhandled synchronous exception taken from GL0" (session 41-a).
+             */
+            bool apple_impdef_hw_af = arm_feature(env, ARM_FEATURE_GXF)
+                                      && regime_is_user(env, mmu_idx);
+            if (param.ha || apple_impdef_hw_af) {
                 new_descriptor |= 1 << 10; /* AF */
             } else {
                 fi->type = ARMFault_AccessFlag;
