@@ -10,7 +10,9 @@
 # /{NSIH}/usr/standalone/firmware/devicetree.img4, umount.
 set -e
 ROOT=/mnt/d/vphonewin
-IMG=${IMG:-$HOME/vrwork/root2.img}
+# под sudo $HOME становится /root; берём владельца скрипта, т.е. реального юзера WSL.
+REAL_HOME=${SUDO_USER:+/home/$SUDO_USER}
+IMG=${IMG:-${REAL_HOME:-$HOME}/vrwork/root2.img}
 TC=${TC:-$ROOT/_work/tc/os.trst.bin}
 DT_OUT=$ROOT/fw/cloud/DeviceTree.patched.im4p
 KO=${APFS_KO:-/home/ard/kbuild/apfs/apfs.ko}

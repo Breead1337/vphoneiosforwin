@@ -903,3 +903,54 @@ SIGKILL, `_captureiBICKCV` REQUIRE, halt-timeout из-за launchd exit) уст�
 каждый обход открывает следующую панику. TC — систематическое решение.
 **How to apply:** возобновление → извлечь `.trustcache` payload → найти static-TC
 registration в XNU → dtpatch.py → прогон.
+
+## Обновление 19.09 (40) — TC-в-DT интегрирован, но fsck SIGSEGV НЕ из-за AMFI
+План NOTES-39 выполнен: `/chosen/memory-map/TrustCache` = {0x16fff0000, 0x1878}
+через `tools/dtpatch.py`, blob грузится в guest RAM ф-цией в
+`overlay/hw/vmapple/vresearch101.c` (env `VR_TRUSTCACHE`). Проверено:
+- QEMU логирует `vresearch101: TrustCache 6264 B loaded @ 0x16fff0000`.
+- XNU принял DT-запись **без** паник `Unexpected /chosen/memory-map/TrustCache
+  property size` / `Unexpected location of TrustCache region` (обе есть в
+  kernelcache-strings).
+- Метрики: 51206 SVC, 30420 GENTER, 233 prefetch, ~988 el0_tail — **идентично
+  session 37/38**. Регрессов нет. Прогресса тоже нет.
+
+**Гипотеза NOTES-39 опровергнута**: fsck SIGSEGV **НЕ** от AMFI/CS. Иначе бы
+fsck вообще не стартовал и valid execution counter не рос. Он рос — значит
+AMFI пропустил fsck. Падает уже внутри самого fsck (или его dylib).
+
+Топ el0_tail-исключений последних тактов (`grep pc= | sort | uniq -c`):
+```
+ 88 pc=0xfffffe00494ad340  (kernel — SVC-handler frame, ожидаемо)
+ 70 pc=0xfffffe00494807fc  (kernel)
+ 15 pc=0x1b0480720          esr=0x9200004b (Access Flag L3) far=0xd350bc000  ← dyld shared cache
+  7 pc=0x1025dbb38          esr=0x92000047 (Translation L3) far=0x1024b4000  ← fsck main image
+```
+FAR `0xd350bc000` = 53 GiB — очевидно **uninitialized pointer** (fsck
+разыменовывает мусор). PC `0x1b0480720` — регион dyld shared cache
+(`libSystem`/`libdyld`). FAR `0x1024b4000` — валидный user-адрес но unmapped.
+
+`ESR=0x920000_4b` = **Access Flag fault L3**, `_47` = Translation fault L3.
+AF-fault значит PTE есть но AF=0; на реальном Apple SoC AF ставится в HW при
+первом доступе (SCTLR_EL1.HA=1). Наш TCG может не эмулировать HW AF update →
+XNU не ставит AF в software fault handler → infinite AF-fault loop → SIGSEGV
+через max-fault-count.
+
+**Следующие шаги (session 41)**:
+1. Проверить SCTLR_EL1.HA в vresearch101 CPU и включить HW AF update в TCG
+   pipeline (`target/arm/tcg/tlb_helper.c` — `arm_page_table_walk`), если
+   не включено. Это фундаментальный fix — вылечит и dyld и fsck-main-image.
+2. Если HW AF есть — реверс `0x1b0480720` (dsc offset) в extracted dyld
+   shared cache, чтобы понять что fsck по этому LR (`0x1b048070c`)
+   разыменовывает (skip syscall / libSystem stub).
+3. Fallback: продолжить план TC-эксперимента отдельно — попробовать
+   `/chosen/memory-map/TrustCache-N` (нумерованные) на случай, что XNU
+   принимает несколько (для system+library TCs).
+
+**Файлы session 40** (закоммичено):
+- `overlay/hw/vmapple/vresearch101.c` — `VR_TC_PADDR=0x16FFF0000`, env-driven load.
+- `tools/dtpatch.py` — переименование `MemoryMapReserved-N` slot → `TrustCache`.
+- `tools/inject_tc_dt.sh` — sudo-wrapper для подмены `devicetree.img4` на Preboot vol0.
+- `tools/run_userspace.sh` — `VR_TRUSTCACHE` export.
+
+Where-we-are: session 41 стартует с TCG AF hardware update.
