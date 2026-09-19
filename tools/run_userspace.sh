@@ -1,12 +1,16 @@
 #!/bin/bash
+set -e
 Q=~/inferno/build/qemu-system-aarch64
 W=~/vrwork
 FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
+TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
 rm -f $W/us.uart $W/us.log
 export VR_NOP="0xfffffe0008f3a91c"
 export VR_MOV0="0xfffffe0008c19a28"
 export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0"
+export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
+set +e
 
 timeout ${T:-360} "$Q" -M vresearch101 -smp 1 -m 4G \
   -bios "$FW" \

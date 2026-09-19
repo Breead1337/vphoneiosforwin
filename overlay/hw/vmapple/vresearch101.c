@@ -451,6 +451,34 @@ static void vr_init(MachineState *machine)
 
     memory_region_add_subregion(sysmem, memmap[VR_MEM].base, machine->ram);
 
+    /*
+     * Static TrustCache blob (raw IM4P `trst` payload, after im4p extract):
+     * loaded at VR_TC_PADDR so /chosen/memory-map/TrustCache (patched in via
+     * tools/dtpatch.py with the same paddr) resolves to a real page in RAM.
+     * XNU/AMFI reads {u64 paddr, u64 size} and consults CDHash entries there
+     * before enforcing AMFI on user binaries. Skipped if $VR_TRUSTCACHE unset.
+     * ponytail: pinned top 64 KiB of the default 4 GiB RAM (iBoot grows bottom-up;
+     * highest EL0 SP observed so far is ~0x16f6a0000, leaving ~5 MiB headroom).
+     */
+    #define VR_TC_PADDR 0x16FFF0000ULL
+    const char *tc_path = g_getenv("VR_TRUSTCACHE");
+    if (tc_path && *tc_path) {
+        gsize tc_len = 0;
+        g_autofree char *tc_buf = NULL;
+        GError *tc_err = NULL;
+        if (!g_file_get_contents(tc_path, &tc_buf, &tc_len, &tc_err)) {
+            error_report("vresearch101: VR_TRUSTCACHE='%s': %s", tc_path, tc_err->message);
+            exit(1);
+        }
+        uint64_t tc_off = VR_TC_PADDR - memmap[VR_MEM].base;
+        if (tc_off + tc_len > memory_region_size(machine->ram)) {
+            error_report("vresearch101: TrustCache blob (%zu B) overflows RAM at %#llx", tc_len, (unsigned long long)VR_TC_PADDR);
+            exit(1);
+        }
+        memcpy(memory_region_get_ram_ptr(machine->ram) + tc_off, tc_buf, tc_len);
+        fprintf(stderr, "vresearch101: TrustCache %zu B loaded @ %#llx (from '%s')\n", tc_len, (unsigned long long)VR_TC_PADDR, tc_path);
+    }
+
     /* PMU SRAM: boot nonce @0x90..0xd4, power request @0x400; survives reset */
     memory_region_init_ram(&vms->pmusram, NULL, "pmusram", memmap[VR_PMUSRAM].size,
                            &error_fatal);
