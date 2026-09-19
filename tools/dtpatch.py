@@ -18,6 +18,12 @@ MANIFEST = {"ECID": struct.pack("<Q", 0)}  # ponytail: only what XNU asked for s
 TC_PADDR = 0x16FFF0000
 TC_PATH = os.environ.get("VR_TRUSTCACHE")  # raw trst payload (after `ipsw img4 im4p extract`)
 
+# /chosen/boot-args — iBoot обычно берёт из NVRAM (у нас пустой). XNU читает
+# CommandLine из BootArgs struct (не из DT), но некоторые подсистемы (kext_start,
+# security policy) читают именно /chosen/boot-args. Оставляем пустым и добавляем
+# только через $VR_BOOTARGS, чтобы не сломать существующий boot без нужды.
+BOOTARGS = os.environ.get("VR_BOOTARGS")
+
 
 def parse(d, o):
     nprops, nkids = struct.unpack_from("<II", d, o); o += 8
@@ -66,6 +72,17 @@ if TC_PATH:
     mm[0][slot] = prop("TrustCache", struct.pack("<QQ", TC_PADDR, tc_size))
     tc_note = f"TrustCache @ {TC_PADDR:#x}+{tc_size:#x} (slot {mm[0][slot][0].rstrip(chr(0).encode())!r})"
 
+ba_note = "boot-args skipped (VR_BOOTARGS unset)"
+if BOOTARGS:
+    ba_bytes = BOOTARGS.encode() + b"\0"
+    # Add/replace /chosen/boot-args (property, not child node). name= is at index [0] of a prop tuple.
+    existing = next((i for i, q in enumerate(chosen[0]) if q[0].rstrip(b"\0") == b"boot-args"), None)
+    if existing is not None:
+        chosen[0][existing] = prop("boot-args", ba_bytes)
+    else:
+        chosen[0].append(prop("boot-args", ba_bytes))
+    ba_note = f"boot-args = {BOOTARGS!r}"
+
 payload = ser(root) + d[end:]
 open(sys.argv[1], "wb").write(der(0x30, der(0x16, b"IM4P") + der(0x16, b"dtre") + der(0x16, b"patched") + der(0x04, payload)))
-print(f"dt {len(d):#x} -> {len(payload):#x}, chosen/manifest-properties: {list(MANIFEST)}, {tc_note}")
+print(f"dt {len(d):#x} -> {len(payload):#x}, chosen/manifest-properties: {list(MANIFEST)}, {tc_note}, {ba_note}")

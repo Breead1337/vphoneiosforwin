@@ -997,3 +997,54 @@ if (param.ha || apple_impdef_hw_af) {
 
 **Файлы session 41** (закоммичено):
 - `overlay/target/arm/ptw.c` — EL0-only Apple-IMPDEF HW AF update.
+
+## Обновление 19.09 (42) — boot-args + fsck stub: тупик из-за AMFI CDHash
+Три эксперимента поверх session 41:
+
+**1. Patch fsck entry → `mov w0,#0; ret` @0x92c** (session-36 style, `tools/stub_fsck.sh`):
+- Результат: **"posix_spawn: 85: Bad executable (or shared library)"** — AMFI
+  ловит несовпадение CDHash пропатченного fsck с TC entry. Раньше (session 36)
+  этого не было потому что TC не работал; теперь работает и валидирует
+  корректно. Стаб откатан.
+
+**2. Boot-args `cs_enforcement_disable=1 amfi_get_out_of_my_way=1 debug=0x14e -v`
+   через /chosen/boot-args** (расширил `tools/dtpatch.py` под `VR_BOOTARGS`;
+   `tools/inject_tc_dt.sh` теперь пишет boot-args по умолчанию):
+- Результат: регресс. fsck снова **SIGSEGV** (не SIGKILL). DA 725, PA 226,
+  ~близко к session-40 baseline. Значит XNU **проигнорировал** DT/boot-args
+  для enforcement: скорее всего PPL/AMFI-DEV режим требует
+  соответствующего entitlement на процессе, boot-arg не глобальный на этой
+  сборке. Или XNU читает CommandLine из BootArgs struct (не из DT),
+  а iBoot boot-args не заполняет.
+
+**3. Root cause fsck-SIGSEGV** — infinite recursion в fsck:
+   `pc=0x102e47b38 sp=<уменьшается>-0x1120 lr=0x102e57f68 far=0x102bf4000
+   esr=0x92000047` (Translation fault L3). SP-падение на 4.4 KB/итерацию
+   → signal handler в libSystem/Foundation рекурсивно пытается работать с
+   невалидной страницей 0x102bf4000. fsck __TEXT @ VA 0x100000000+0x4000
+   (16 KB), slide fsck ~ 0x2e44000 (обычный ASLR). fsck сам корректно
+   стартует (проходит AMFI, code executes) но упирается во внутренний
+   invariant.
+
+**Тупик**: без валидного пересчёта CDHash патч fsck невозможен, а без
+патча fsck — infinite SIGSEGV loop.
+
+**Следующие пути (session 43)**:
+1. **Реализовать CDHash пересчёт** (`tools/patch_cs.py` + `tc_append.py`):
+   - Найти LC_CODE_SIGNATURE → CS SuperBlob → CodeDirectory (magic 0xFADE0C02).
+   - Пересчитать SHA256 страницы 0x0 (первая, где патч), обновить hash slot.
+   - Пересчитать SHA256 всего CD blob → новый CDHash (первые 20 байт).
+   - Добавить 24-байтную entry в TC blob (`_work/tc/os.trst.bin`), поднять
+     `nentries` в header.
+   - Дальше повторить stub_fsck + прогон.
+2. **Или патч AMFI в kernelcache**: найти `mac_vnode_check_signature` /
+   `vnode_check_signature`, повесить VR_MOV0 на "return 0". Обход всей
+   проверки, не только для fsck. Более грубо, но 1 адрес vs скрипт.
+3. **Или патч launchd** (`bl fsck_call` → NOP): убрать вызов fsck целиком.
+   Launchd тоже подписан → тот же CDHash-стенка. Проще patch AMFI (#2).
+
+**Файлы session 42** (закоммичено):
+- `tools/dtpatch.py` — поддержка `$VR_BOOTARGS` → `/chosen/boot-args`.
+- `tools/inject_tc_dt.sh` — прописывает VR_BOOTARGS по умолчанию.
+- `tools/stub_fsck.sh` — sudo-обёртка стаба fsck (сейчас не применён, оставлен
+  как инструмент для session 43 после пересчёта CDHash).
