@@ -803,7 +803,8 @@ illegal_return:
                   "resuming execution at 0x%" PRIx64 "\n", cur_el, env->pc);
 }
 
-/* vresearch101 debug: VR_WATCH hit (see translate-a64.c) — print static pc + args, always on */
+/* vresearch101 debug: VR_WATCH hit (see translate-a64.c) — print static pc + args, always on.
+ * Также пытается прочитать строку по x0/x1 (обычно filename или proc_comm) — session 53. */
 void HELPER(vr_watch)(CPUARMState *env, uint64_t pc)
 {
     uint64_t slide = env->cp15.vbar_el[1] - 0xfffffe0008a5f000ULL;
@@ -812,6 +813,37 @@ void HELPER(vr_watch)(CPUARMState *env, uint64_t pc)
              " lr-s=0x%" PRIx64 "\n",
              pc - slide, env->xregs[0], env->xregs[1], env->xregs[2], env->xregs[3], env->xregs[8], env->xregs[16] - slide,
              env->xregs[19], env->xregs[20], env->xregs[21], env->xregs[30] - slide);
+    /* Попытка прочитать строки по x0..x5 (первые 128 байт как ASCII) для watch на panic-обёртках */
+    for (int r = 0; r <= 5; r++) {
+        uint64_t ptr = env->xregs[r];
+        if (ptr < 0x1000 || (ptr & 0xffffff0000000000ULL) == 0) continue;
+        GetPhysAddrResult res = {};
+        ARMMMUFaultInfo fi = {};
+        char buf[128] = {};
+        bool ok = !get_phys_addr(env, ptr, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi);
+        if (!ok && (ptr >= 0xfffffe0000000000ULL)) {
+            ok = !get_phys_addr(env, ptr, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E1, &res, &fi);
+        }
+        if (ok) {
+            address_space_read(env_cpu(env)->as, res.f.phys_addr, MEMTXATTRS_UNSPECIFIED, buf, sizeof(buf) - 1);
+            /* only print if starts with printable ASCII and has at least 3 chars before \0 or non-printable */
+            int printable = 0;
+            for (int i = 0; i < 32; i++) {
+                if (buf[i] == 0) break;
+                if (buf[i] >= 0x20 && buf[i] < 0x7f) printable++;
+                else { printable = 0; break; }
+            }
+            if (printable >= 3) {
+                /* replace non-printable with '.' */
+                for (int i = 0; i < 127; i++) {
+                    if (buf[i] == 0) break;
+                    if (buf[i] < 0x20 || buf[i] >= 0x7f) buf[i] = '.';
+                }
+                buf[127] = 0;
+                qemu_log("  x%d -> \"%s\"\n", r, buf);
+            }
+        }
+    }
 }
 
 void HELPER(gexit)(CPUARMState *env)

@@ -6,8 +6,10 @@ FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
 TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
 rm -f $W/us.uart $W/us.log
-export VR_NOP="0xfffffe0008f3a91c"
+export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c"
 # 0xfffffe0008f3a91c — rootvp auth (session 35).
+# 0xfffffe0008f6f214 — BSD signal psignal(initproc, SIGKILL) bypass (session 48/53).
+# 0xfffffe0008f7c25c — reap_child_locked psignal_with_reason(initproc, SIGKILL, BAD_MACHO) bypass (session 53).
 # Session 49: пробовали NOP на 4 panic (evaluate + BSD signal) — "Kernel
 # instruction fetch abort" (unreachable code после noreturn panic).
 # Патч kernelcache через tools/patch_kc.py — iBoot отверг ("Kernelcache
@@ -17,11 +19,17 @@ export VR_NOP="0xfffffe0008f3a91c"
 # — вернулись к "SIGKILL of init". Root cause — AMFI evaluate детектит
 # несоответствие CDHash с TC. Session 47 = реальный CDHash пересчёт.
 export VR_MOV0="0xfffffe0008c19a28,0xfffffe0007d5785c"
+export VR_RET0="0xfffffe0007eaf750,0xfffffe0007eafb20,0xfffffe0007eb6de8"
+# 0xfffffe0007eaf750: AppleSEPBooter::_captureiBICKCV() — SEP hardware check early-return (Session 54).
+# 0xfffffe0007eafb20: AppleSEPBooter::bootSEP() — SEP boot hardware check early-return (Session 54).
+# 0xfffffe0007eb6de8: AppleSEPBooter::checkStatus() — SEP status check panic early-return (Session 54).
 # 0xfffffe0007d5785c: mov x0,x21 → замещаем на mov x0,#0 перед retab
 # vnode_check_signature. Функция полностью выполнится (out-params
 # правильные), но result всегда 0 (allow). Session 52 — узкая замена
 # session 43 VR_RET0 который ломал out-params → BAD_MACHO SIGKILL init.
-export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0"
+export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0,0xfffffe000885cc60:0xfffffe000885cc78"
+# 0xfffffe000885cc60:0xfffffe000885cc78 — AMFI evaluate.c:0x137b shenanigans! bypass (Session 54).
+# b.ne #0xfffffe000885cfc8 (panic) redirected to str xzr,[sp,#0x18] (success return 0).
 # AMFI vnode_check_signature @0xfffffe0007d56dd4 — прыжок в начало функции;
 # VR_RET0 = "mov x0,#0; ret x30" — MAC hook возвращает 0 (allow) для ЛЮБОГО
 # бинаря; позволяет пропатчить fsck (@0x92c stub) не пересчитывая CDHash.
@@ -32,6 +40,9 @@ export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe00
 # @ 0xfffffe0007d5785c. Функция выполнится полностью (out-params правильные),
 # но result затрётся в 0 → AMFI allow. Гипотеза: BAD_MACHO SIGKILL init
 # был из-за out-params corruption от полного skip функции.
+export VR_WATCH="0xfffffe0008f77aac"
+# Session 53: watch func containing "Process 1 exec of %s failed" panic.
+# x0=proc, x1=exec_args, x2=..., lr=caller — узнаем какой path exec-ит init.
 export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
 set +e
 

@@ -1531,3 +1531,34 @@ psignal-обёртка). Multi-layer BSD signal delivery — каждый уро
 init для fsck**, но следующий exec bad_macho — от другого бинаря.
 Инструментарий готов: `patch_cs.py` + `tc_append.py` + `stage_boot_tasks.sh`
 + `restore_fsck.sh` + `stage_preboot.sh`.
+
+## Обновление 19.09 (53) — Устранение "unexpected SIGKILL of init"
+- Идентифицированы call-site `psignal_internal(initproc, SIGKILL, ...)`:
+  1. `0xfffffe0008f7c25c` в `reap_child_locked` (`kern_exit.c`), создававший `OS_REASON_EXEC` (code=1 `BAD_MACHO`).
+  2. `0xfffffe0008f6f214` в BSD signal path.
+- Добавлены в `VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c"`.
+- **Результат**: паника `unexpected SIGKILL of init` полностью исчезла.
+- Обнаружена следующая паника: `panic("\"shenanigans!\" @%s:%d", "evaluate.c", 0x137b)`.
+
+## Обновление 20.09 (54) — ГРАНДИОЗНЫЙ ПРОРЫВ: 0 ПАНИК, СИСТЕМА ЖИВА В IDLE + LAUNCHD В MACH_MSG_TRAP!
+1. **Обход AMFI evaluate.c:0x137b (`shenanigans!`):**
+   - Дизассемблирован `AppleMobileFileIntegrity.kext` (`evaluate.c:0x137b`).
+   - Найдена проверка: `0xfffffe000885cc60: b.ne #0xfffffe000885cfc8`, прыгавшая в `panic("shenanigans!")` при несовпадении `[x19, #0x10] != [x23]`.
+   - Добавлен `VR_B="...,0xfffffe000885cc60:0xfffffe000885cc78"`. Перенаправляет переход на `str xzr, [sp, #0x18]`, возвращая 0 (ALLOW / SUCCESS) и выполняя корректный cleanup стека. Паника `shenanigans!` полностью устранена!
+
+2. **Обход цепочки паник `AppleSEPBooter` (виртуализация SEP):**
+   - Паника 1: `AppleSEPBooter::_captureiBICKCV()` (`REQUIRE fail: kIOReturnSuccess == result @ AppleSEPBooter.cpp:185`). Вход @ `0xfffffe0007eaf750` добавлен в `VR_RET0`.
+   - Паника 2: `AppleSEPBooter::bootSEP()` @ `0xfffffe0007eafb20` (`SEP Boot Failure: status check 1 failed - 0xe00002d6 @ AppleSEPBooter.cpp:356`). Добавлен в `VR_RET0`.
+   - Паника 3: `AppleSEPBooter::checkStatus()` @ `0xfffffe0007eb6de8` (`SEP/OS failed to boot at stage 1`). Добавлен в `VR_RET0`.
+
+3. **ФИНАЛЬНЫЙ РЕЗУЛЬТАТ ТЕСТА (run_userspace.sh):**
+   - **ZERO PANICS! ZERO UDEF/CRASH! ZERO KILLS!**
+   - `Taking exception 1 [Undefined Instruction]` = **0**!
+   - `Taking exception 2 [SVC]` = **47,077**!
+   - `Taking exception 30 [Guarded Execution Enter]` = **25,080**!
+   - `Taking exception 6 [FIQ]` = **695** (таймерные прерывания ядра)!
+   - `Taking exception 5 [IRQ]` = **227** (I/O прерывания)!
+   - Userspace (`/sbin/launchd`, PID 1) выполнил 47,000+ системных вызовов, загрузил shared cache dyld, инициализировал libdispatch и Mach IPC, и вошёл в главный event loop (`mach_msg_trap` / `kevent`).
+   - Ядро XNU перешло в нормальный рабочий `machine_idle` (`0xfffffe0008c1cbf0`, `wfi`), обрабатывая таймерные тики и аппаратные прерывания!
+   - Гость стабильно работает до истечения таймера таймаута без единого сбоя!
+
