@@ -33,7 +33,9 @@ STUB="$WORK/stub"
 CDHASH=$(python3 "$ROOT/tools/patch_cs.py" "$SRC" "$STUB" | awk '{print $NF}')
 echo "стаб готов, CDHash=$CDHASH"
 
-# Ставим в 4 patha (owner+mode как оригинал fsck: r-xr-xr-x root)
+# Ставим в 3 патха (owner+mode как оригинал fsck: r-xr-xr-x root).
+# fsck сам НЕ трогаем — оригинальный CDHash в TC session 46b; stub'ать
+# fsck ломает Team ID match (session 52 EBADEXEC).
 for dst in \
     /usr/libexec/MSUEarlyBootTask \
     /usr/libexec/MobileAssetEarlyBootTask \

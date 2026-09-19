@@ -16,16 +16,22 @@ export VR_NOP="0xfffffe0008f3a91c"
 # Session 46 пробовал ещё 2 NOP на shenanigans! panic (0xfffffe000885cfc4/cff0)
 # — вернулись к "SIGKILL of init". Root cause — AMFI evaluate детектит
 # несоответствие CDHash с TC. Session 47 = реальный CDHash пересчёт.
-export VR_MOV0="0xfffffe0008c19a28"
+export VR_MOV0="0xfffffe0008c19a28,0xfffffe0007d5785c"
+# 0xfffffe0007d5785c: mov x0,x21 → замещаем на mov x0,#0 перед retab
+# vnode_check_signature. Функция полностью выполнится (out-params
+# правильные), но result всегда 0 (allow). Session 52 — узкая замена
+# session 43 VR_RET0 который ломал out-params → BAD_MACHO SIGKILL init.
 export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0"
 # AMFI vnode_check_signature @0xfffffe0007d56dd4 — прыжок в начало функции;
 # VR_RET0 = "mov x0,#0; ret x30" — MAC hook возвращает 0 (allow) для ЛЮБОГО
 # бинаря; позволяет пропатчить fsck (@0x92c stub) не пересчитывая CDHash.
 # Найдено xref к строке "AMFI: vnode_check_signature called with platform %d"
 # @VA 0xfffffe00071f79e5, ADRP+ADD @0xfffffe0007d56e34, prolog pacibsp @dd4.
-export VR_RET0="0xfffffe0007d56dd4"
-# 0xfffffe0007d56dd4 = kernel: AMFI vnode_check_signature bypass (session 43).
-# Без него = TXM GL0 crash (session 41-first). Оставляем.
+# Session 52: убрал VR_RET0 на vnode_check_signature (был 0xfffffe0007d56dd4).
+# Вместо него — узкий VR_MOV0 на mov x0,x21 непосредственно перед retab
+# @ 0xfffffe0007d5785c. Функция выполнится полностью (out-params правильные),
+# но result затрётся в 0 → AMFI allow. Гипотеза: BAD_MACHO SIGKILL init
+# был из-за out-params corruption от полного skip функции.
 export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
 set +e
 

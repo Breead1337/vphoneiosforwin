@@ -1487,3 +1487,47 @@ BAD_MACHO) через SIGKILL delivery, не через прямой panic("exec
 launchd main sequence** — понять что именно он exec-ит первым что имеет
 BAD_MACHO. Или пересобрать `_launchd` binary саму (rebuild из XNU source
 если найдётся). Требует часов работы вне auto-mode.
+
+## Обновление 19.09 (52) — ПРОРЫВ: узкий AMFI-patch (VR_MOV0 mov x0,x21)
+**Ключевая находка**: session 43 использовала VR_RET0 на entry
+`AppleMobileFileIntegrity::vnode_check_signature` @ `0xfffffe0007d56dd4` —
+это полностью skip'ало функцию, но **портило out-params** → следующие
+consumers видели fatal/uninitialized state → `os_reason(EXEC, BAD_MACHO)`
+→ SIGKILL init.
+
+Правильный ход — **выполнить функцию полностью, но обнулить result**:
+```
+0xfffffe0007d5785c: aa1503e0    mov x0, x21     ← VR_MOV0 → mov x0, #0
+0xfffffe0007d57860: 910a03ff    add sp, sp, ...
+...
+0xfffffe0007d5787c: d65f0fff    retab
+```
+Патч: **`VR_MOV0="0xfffffe0007d5785c"`** — единственный retab путь функции,
+mov x0,x21 замещается на mov x0,#0. Функция полностью выполняется
+(inner check, out-params правильные), result=0 (allow) без побочек.
+
+Результат session 52 (узкий bypass + оригинал fsck):
+- DA=725 (реальные CS-check работают в fsck внутри)
+- fsck SIGSEGV изнутри (wild pointer как session 40 baseline)
+- **НЕТ "unexpected SIGKILL of init"** — прошли стенку.
+
+Дальше — session 52+launchd patch: NOP на `bl do_boot_task("fsck")`
+@ `0x10004972c` в launchd, пересчитан CDHash + добавлен в TC. Результат:
+DA=10, PA=0 (fsck skipped), но **вернулась SIGKILL init** — значит какой-то
+**другой** child launchd exec с BAD_MACHO проблемой (не fsck).
+
+VR_WATCH @ func-caller signal (0xfffffe0008f75308) поймал ОДНО попадание
+lr=0xfffffe0008f77410 в функции @ 0xfffffe0008f77268 (12+ bl calls,
+psignal-обёртка). Multi-layer BSD signal delivery — каждый уровень
+требует отдельного watch.
+
+**Стабильная точка session 52**:
+- `run_userspace.sh` — VR_MOV0=0xfffffe0007d5785c (узкий AMFI patch).
+- Оригинальный launchd + fsck + 3 stubs (MSU/MobileAsset/auearlyboot) c
+  CDHash в TC.
+- Отладка BSD signal path требует часов дизасма (function tree ~5 уровней).
+
+**Новая точка отсчёта**: session 52 узкий AMFI-patch **обходит SIGKILL
+init для fsck**, но следующий exec bad_macho — от другого бинаря.
+Инструментарий готов: `patch_cs.py` + `tc_append.py` + `stage_boot_tasks.sh`
++ `restore_fsck.sh` + `stage_preboot.sh`.
