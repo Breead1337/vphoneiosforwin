@@ -1360,3 +1360,44 @@ NOP на `bl @ 0xf6f214` → **обошли** SIGKILL init panic (VR_WATCH не 
 
 **10 сессий (40-48)** прошли за один заход, весь прогресс в GitHub.
 Runtime-хуки исчерпаны на AMFI evaluate стенке.
+
+## Обновление 19.09 (49) — AMFI kernelcache patch: iBoot отверг; runtime NOP → IF abort
+Пошли по пути #2 (патч AMFI evaluate.c) как самый эффективный из трёх.
+**Три попытки**, все заблокированы iBoot/XNU защитами:
+
+**1. `tools/patch_kc.py` расширен** — добавил NOP на 4 panic-wrapper:
+   - `0xfffffe000885cfc4/cff0` — bl panic("shenanigans!" @evaluate.c)
+   - `0xfffffe0008f6f214/f400` — bl panic("SIGKILL of init") в BSD signal path
+   - `mkpreboot.py` переключён на `kernelcache.patched.im4p`.
+Результат: **"Kernelcache image not valid" → recovery mode**. iBoot валидирует
+kernelcache payload через inline hash check, не покрытый ADRP-xref к error
+string @VA `0x701132b2`.
+
+**2. `tools/mkaux.py` расширен** — `IBOOT_PATCHES` с 3× mov w0,#0 на bl-hash-check
+   в iBoot (file offsets 0xd664/dc74/de60). Патч верифицирован в aux.test
+   после сборки. Результат: **та же ошибка** "Kernelcache image not valid".
+Значит iBoot делает hash check через **другую** функцию (не найдена).
+
+**3. Runtime `VR_NOP` на все 4 panic** одновременно в run_userspace.sh поверх
+   оригинального kernelcache. Результат: **"Kernel instruction fetch abort"**
+   — NOP на bl panic (noreturn) → выполнение продолжается в unreachable
+   padding с невалидными инструкциями (pc `~0xfffffe00420e8b0c`).
+
+**Все три подхода #2 заблокированы.** Runtime-хук не может подменить noreturn
+panic на valid flow без изменения структуры функции. Патч в kernelcache
+блокируется многослойным hash check iBoot.
+
+**Реальный next-step (session 50) — путь #1 (пересборка rootfs)**:
+- Взять полную iOS сборку (не cloudOS 26.4 — там нет MSU/MobileAsset).
+- Извлечь бинари MSUEarlyBootTask, MobileAssetEarlyBootTask,
+  darwinos-boot-task, auearlyboot из полной iOS.
+- Пересчитать CDHash каждого + добавить entries в TC blob.
+- Положить бинари на rootfs vol1 через APFS mount.
+
+**Все правки session 49 откачены** к рабочему session 43 config:
+- `run_userspace.sh` — только AMFI vnode_check_signature VR_RET0.
+- `mkpreboot.py` — оригинальный `kernelcache.research.vresearch101`.
+- `mkaux.py` — оригинальный iBoot.im4p без патчей (IBOOT_PATCHES оставлен
+  как reference для будущего).
+- `patch_kc.py` — 4 новых NOP оставлены в PATCHES dict (не применяются пока
+  mkpreboot не указывает на patched.im4p).

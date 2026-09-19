@@ -13,6 +13,9 @@ FILES = {
     "usr/standalone/firmware/FUD/StaticTrustCache.img4": "Firmware/094-39278-029.dmg.aea.trustcache",
     "usr/standalone/firmware/FUD/Ap,SecurePageTableMonitor.img4": "Firmware/sptm.vresearch1.release.im4p",
     "usr/standalone/firmware/FUD/Ap,TrustedExecutionMonitor.img4": "Firmware/txm.iphoneos.research.im4p",
+    # session 49: kernelcache.patched.im4p iBoot отверг ("Kernelcache image
+    # not valid" — вероятно inline hash check не покрытый ADRP-xref). Возврат
+    # к оригиналу; вместо этого runtime-хук на обе panic сразу (см. run_userspace.sh).
     "System/Library/Caches/com.apple.kernelcaches/kernelcache": "kernelcache.research.vresearch101",
 }
 

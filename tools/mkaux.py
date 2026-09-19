@@ -5,7 +5,10 @@ import struct, sys
 FW = "/mnt/d/vphonewin/fw/cloud/Firmware/"
 RAW = "/mnt/d/vphonewin/fw/cloud/raw/"
 LLB_BASE = 0x7006C000
+IBOOT_BASE = 0x7006C000  # ponytail: используется как якорь для file-offset патчей;
+                          # реальный runtime base у iBoot может отличаться, но offsets те же
 NOP = 0xD503201F
+MOV_W0_0 = 0x52800000     # mov w0, #0 — заставить cbz w0, skip срабатывать всегда
 
 
 def b(src, dst):
@@ -24,9 +27,24 @@ LLB_PATCHES = {
     0x700A67C8: (0x340000C0, b(0x700A67C8, 0x700A67E0)),  # 4e rootfs: cbz w0 -> b (err 0x110)
     0x7008635C: (0x35000460, NOP),                        # 5 panic bypass: cbnz w0 after 0x400328 poke
 }
+
+# iBoot патчи (session 49): наш patched kernelcache имеет другой SHA-hash чем
+# manifest в IM4M — iBoot валидатор говорит "Kernelcache image not valid" и
+# уходит в recovery. 3 xref к строке @ file 0xa72b2: каждый паттерн
+# `bl <hash_check>; cbz w0, <skip_error>`. Заменяем bl на mov w0,#0 →
+# skip всегда срабатывает. То же для Device Tree / Ramdisk (если понадобится).
+IBOOT_PATCHES = {
+    0x7007966c - 0x8: (0x9400547e, MOV_W0_0),  # bl @ file 0xd664 (bl+cbz+error @ 0x7007966c)
+    0x70079c7c - 0x8: (0x94005177, MOV_W0_0),  # bl @ file 0xdc74
+    0x70079e68 - 0x8: (0x9400500f, MOV_W0_0),  # bl @ file 0xde60
+}
+
 IMAGES = [  # order matters: AVPBooter takes the first one (illb); bytes or path
     lambda: patched_im4p(RAW + "LLB.vresearch101.RELEASE.bin", b"illb", LLB_BASE, LLB_PATCHES),
     FW + "all_flash/iBoot.vresearch101.RESEARCH_RELEASE.im4p",
+    # session 49 iBoot patches отключены — на нашей сборке ошибка
+    # "Kernelcache image not valid" срабатывает через другой код.
+    # См. IBOOT_PATCHES выше как reference для будущего.
 ]
 
 

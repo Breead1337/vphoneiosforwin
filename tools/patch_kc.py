@@ -11,6 +11,13 @@ NOP = 0xd503201f
 PATCHES = {  # VA -> (expected_word, new_word)
     0xfffffe0007eafd10: (0x97fffe90, NOP),  # bl _captureiBICKCV (first caller, delta=-0x5c0)
     0xfffffe0007eafd50: (0x97fffe80, NOP),  # bl _captureiBICKCV (second caller, delta=-0x600)
+    # Session 49 — AMFI evaluate.c "shenanigans!" + BSD SIGKILL-init panics.
+    # Оба — исходы одного AMFI-детектора (session 48 замкнутый круг). NOP на
+    # bl panic() → panic не вызывается, следующая инструкция валидна.
+    0xfffffe000885cfc4: (0x942950c9, NOP),  # bl panic("shenanigans!" @evaluate.c:0x137b)
+    0xfffffe000885cff0: (0x942950be, NOP),  # bl panic("shenanigans!" evaluate.c 2nd)
+    0xfffffe0008f6f214: (0x9400b9a4, NOP),  # bl panic("SIGKILL of init"), BSD signal caller 1
+    0xfffffe0008f6f400: (0x9400b929, NOP),  # bl panic("SIGKILL of init"), caller 2
 }
 
 
