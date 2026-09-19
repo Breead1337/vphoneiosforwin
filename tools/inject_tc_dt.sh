@@ -21,8 +21,7 @@ KO=${APFS_KO:-/home/ard/kbuild/apfs/apfs.ko}
 [ -f "$IMG" ] || { echo "нет $IMG"; exit 1; }
 [ -f "$KO" ] || { echo "нет $KO — собери: bash $ROOT/tools/build_apfs_module.sh"; exit 1; }
 
-VR_TRUSTCACHE="$TC" VR_BOOTARGS="${VR_BOOTARGS:-cs_enforcement_disable=1 amfi_get_out_of_my_way=1 debug=0x14e -v}" \
-  python3 "$ROOT/tools/dtpatch.py" "$DT_OUT"
+VR_TRUSTCACHE="$TC" VR_BOOTARGS="${VR_BOOTARGS:-}" python3 "$ROOT/tools/dtpatch.py" "$DT_OUT"
 
 grep -q '^apfs ' /proc/modules || insmod "$KO"
 

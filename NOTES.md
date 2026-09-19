@@ -1048,3 +1048,51 @@ if (param.ha || apple_impdef_hw_af) {
 - `tools/inject_tc_dt.sh` — прописывает VR_BOOTARGS по умолчанию.
 - `tools/stub_fsck.sh` — sudo-обёртка стаба fsck (сейчас не применён, оставлен
   как инструмент для session 43 после пересчёта CDHash).
+
+## Обновление 19.09 (43) — АМFI vnode_check_signature → 0 → fsck прошёл!
+**Прорыв**: обошли CDHash-стенку через kernel-side патч. VR_RET0 на начало
+`AppleMobileFileIntegrity::vnode_check_signature` (@ VA `0xfffffe0007d56dd4`)
+превращает всю функцию в `mov x0, #0; ret x30` → MAC hook всегда allow.
+
+**Как нашли адрес**:
+1. `strings kc | grep 'AMFI: vnode_check_signature called with platform'`
+   → в `__PRELINK_TEXT` @VA `0xfffffe00071f79e5`.
+2. Xref: единственный ADRP+ADD @ `0xfffffe0007d56e34/e38` в `__TEXT_EXEC`.
+3. Функция prolog `pacibsp` @ `0xfffffe0007d56dd4` (первый выше). Именно
+   на него VR_RET0 (см. `overlay/target/arm/tcg/translate-a64.c:10478` —
+   `mov x0,#0; RET x30 без auth`).
+
+**Метрики**:
+| фаза            | SVC   | GENTER | Data Abort | Prefetch |
+| --------------- | ----- | ------ | ---------- | -------- |
+| session 40 base | 51206 | 30420  |        759 |      233 |
+| session 41 AF   | 49072 | 30042  |        423 |      217 |
+| session 43 AMFI | 46999 | 25006  |     **10** |    **0** |
+
+Data Abort ↓ **75×**, Prefetch ↓ **до нуля**. fsck реально exit=0 через
+stub `mov w0,#0; ret @0x92c`. **Launchd прошёл fsck** и умер сам:
+```
+"unexpected SIGKILL of init with reason -- namespace 3 code 0x9"
+```
+namespace 3 = OS_REASON_SIGNAL, code 9 = SIGKILL. XNU панике потому что
+init/PID1 нельзя убивать. Скорее всего:
+- launchd exec-ит следующий boot task (не fsck), тот не находится / не
+  запускается → launchd exit(9) → XNU trap "cannot exit PID 1".
+
+**Следующие пути (session 44)**:
+1. Найти какой boot task launchd пытается запустить после fsck. Смотреть
+   в launchd binary (`_launchd`) на "hardwired boot tasks" list; или
+   грепать /System/Library/LaunchDaemons на root2.img.
+2. Возможно проблема — missing service (mach_init, notifyd, ...) → nag
+   для минимального userspace нужно понять MINIMUM boot chain.
+3. Или SIGKILL от нашего же AMFI-bypass: mac_vnode_check_signature=0
+   всегда → некоторые consumers ожидают что deny срабатывает; XNU
+   detects invariant и убивает init. Проверить через VR_MOV0 (более
+   узкий скоуп: replace единственный call site вместо переопределения
+   всей функции).
+
+**Файлы session 43** (коммитится следом):
+- `tools/run_userspace.sh` — добавил `VR_RET0=0xfffffe0007d56dd4`.
+- `tools/inject_tc_dt.sh` — убрал по умолчанию `VR_BOOTARGS` (не работал).
+- fsck stub (session 42, `tools/stub_fsck.sh`) активирован — нужен после
+  каждого re-mount root2.img.

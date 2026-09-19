@@ -9,6 +9,12 @@ rm -f $W/us.uart $W/us.log
 export VR_NOP="0xfffffe0008f3a91c"
 export VR_MOV0="0xfffffe0008c19a28"
 export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0"
+# AMFI vnode_check_signature @0xfffffe0007d56dd4 — прыжок в начало функции;
+# VR_RET0 = "mov x0,#0; ret x30" — MAC hook возвращает 0 (allow) для ЛЮБОГО
+# бинаря; позволяет пропатчить fsck (@0x92c stub) не пересчитывая CDHash.
+# Найдено xref к строке "AMFI: vnode_check_signature called with platform %d"
+# @VA 0xfffffe00071f79e5, ADRP+ADD @0xfffffe0007d56e34, prolog pacibsp @dd4.
+export VR_RET0="0xfffffe0007d56dd4"
 export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
 set +e
 
