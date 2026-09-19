@@ -1446,3 +1446,44 @@ description "none").
 3. Или fundamentally сузить AMFI-bypass через реверс evaluate.c.
 
 Все правки сессии 50 в git (инфраструктура для будущего).
+
+## Обновление 19.09 (51) — "Process 1 exec of %s failed" panic не наш путь
+VR_WATCH на @0xfffffe0008f77cb8 (единственный call site "Process 1 exec of
+%s failed, errno %d" в kernel) — **не сработал**. Значит exec-specific
+panic не вызывается. SIGKILL init приходит через **общий** BSD signal
+handler @0xfffffe0008f6eae0 (нашли VR_WATCH-ом в session 48).
+
+Наш panic-init handler получает reason (namespace=9 OS_REASON_EXEC, code=1
+BAD_MACHO) через SIGKILL delivery, не через прямой panic("exec failed"). 
+Значит:
+- какой-то процесс exec-ит binary с BAD_MACHO,
+- exec_parser сам возвращает EXEC_EXIT_REASON_BAD_MACHO как exit reason,
+- os_reason attaches к SIGKILL,
+- init процесс получает SIGKILL от жертвы через reparent-cleanup,
+- BSD signal path видит SIGKILL init → panic.
+
+Полное расследование требует найти путь между exec_parser BAD_MACHO
+и delivery SIGKILL init — многослойный BSD/mach reparent. Без реверса
+всей цепочки runtime-хуков не хватает.
+
+**Итого 12 сессий (40-51) в этом заходе:**
+- 40 TC-DT ✅
+- 41 HW AF ✅ (главный прорыв)
+- 42 boot-args ❌
+- 43 AMFI-bypass ✅ (второй прорыв, DA→10)
+- 44 fsck stub не нужен
+- 45 shenanigans
+- 46 NOP shenanigans → SIGKILL init
+- 46b fsck CDHash уже в TC
+- 47 user do_boot_task ❌
+- 48 VR_WATCH подтвердил BSD signal
+- 49 patch kernelcache/iBoot ❌ (inline hash checks)
+- 50 patch_cs/tc_append + fake stubs ❌ (SIGKILL до stubs)
+- 51 exec panic — не наш path
+Всё в git (73fe929..22cc4ff последние). Runtime-хуки полностью исчерпаны
+на этой стенке.
+
+**Реальный next-step (session 52+)**: НЕ runtime-хук, а **глубокий реверс
+launchd main sequence** — понять что именно он exec-ит первым что имеет
+BAD_MACHO. Или пересобрать `_launchd` binary саму (rebuild из XNU source
+если найдётся). Требует часов работы вне auto-mode.
