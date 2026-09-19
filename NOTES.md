@@ -1133,3 +1133,39 @@ init/PID1 нельзя убивать. Скорее всего:
 3. Или найти где именно psignal init (SIGKILL). Строка "unexpected
    SIGKILL of init" в kc → xref → функция → каких стек-конфигурации
    вызывает.
+
+## Обновление 19.09 (44b) — fsck-stub НЕ нужен: AMFI-bypass достаточен
+Убрали stub_fsck (fsck вернули в оригинал) — **метрики идентичны session 43**:
+46999 SVC, 23903 GENTER, 10 DA, 0 PA, та же паника "unexpected SIGKILL of init".
+
+Значит:
+- fsck при живом AMFI-bypass **успешно исполняется до конца** (не входит в
+  SIGSEGV recursion как в session 41 — вероятно оригинальный CS check на
+  каждой mmap-странице AMFI-hook раньше давал permission fault → recursion,
+  а сейчас allow-all избавляет от проблемы).
+- Launchd exec-ит следующие boot tasks (MSU*, MobileAsset*, ...) — они тоже
+  проходят AMFI и работают.
+- Один из tasks (или сам launchd) в итоге получает SIGKILL. XNU панике
+  потому что PID 1 нельзя SIGKILL.
+
+Panic-функция найдена: `0xfffffe0008f9d8a4` (10+ callers в BSD signal path,
+адреса `0xfffffe0008f6f214..f7667c` в диапазоне BSD `psignal_locked` /
+`proc_exit`). Значит SIGKILL приходит через нормальный BSD signal
+delivery, не через MAC/CS.
+
+Возможные источники SIGKILL init:
+- watchdog daemon (ждёт heartbeat от init, не получил)
+- kernel jetsam (маловероятно для PID 1)
+- **launchd sам** решает exit через `_exit(9)` когда что-то не может
+  запустить/ждать
+- какой-то sysctl invariant (например IOKit детектит что init перестал
+  быть boot-parent'ом какого-то process)
+
+**Session 45 предложения**:
+1. Расширить логирование в `overlay/target/arm/helper.c` — добавить лог
+   любого `psignal(SIGKILL, target_pid=1)` через BSD-хук.
+2. Или добавить VR_NOP на panic-функцию `0xfffffe0008f9d8a4` — пусть
+   продолжает работать (без panic) и мы увидим что делает ядро дальше.
+3. Или включить `boot-args=debug=0x14e -v serial=3` через *BootArgs
+   struct* (не через DT — надо реверсить как iBoot конструирует
+   BootArgs, чтобы XNU реально печатал boot messages на UART).
