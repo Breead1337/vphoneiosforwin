@@ -1279,3 +1279,41 @@ fsck выполняется, launchd exec-ит следующие tasks — он
 **Файлы session 46-46b** (закоммичено в 1907722+):
 - `tools/run_userspace.sh` — только vnode_check_signature bypass, остальное
   откачено.
+
+## Обновление 19.09 (47) — user-space VR_RET0 не сработал, AMFI-bypass обязателен
+Попытка 1: **user-space VR_RET0=0x100048cd0** (launchd `do_boot_task`)
+поверх session 43. Идея — скипать все hardwired boot tasks (fsck, MSU*,
+MobileAsset*, darwinos-*, auearlyboot) чтобы launchd не exec-ил
+отсутствующие бинари. Match через `vr_uslide_auto` (первый EL0 pc =
+launchd base 0x100c50000, slide 0xc50000 из session 41). Метрики
+идентичны session 43 (46999 SVC, 10 DA, 0 PA), паника та же
+"SIGKILL init" → **VR_RET0 на do_boot_task не сработал**. Причины:
+- либо slide не 0xc50000 в этой прогонке (auto-detect по первому EL0 pc,
+  может быть другой процесс),
+- либо launchd НЕ доходит до do_boot_task — SIGKILL init происходит раньше
+  в init sequence,
+- либо TCG хук работает только для kernel-space regime (не проверялось на user).
+
+Попытка 2: **убрать AMFI-bypass** полностью. Вернулась **старая TXM GL0
+паника** (session 41 first attempt) = "[TXM] Unhandled synchronous exception
+taken from GL0". Значит AMFI-bypass **обязателен** для прогресса — без него
+не проходим TXM boot.
+
+**Тупик текущего подхода** через runtime-хуки. Нужен инструмент отладки:
+1. Логировать `psignal(SIGKILL, target)` в XNU — узнать точно ГДЕ (какой pc)
+   и от кого приходит kill. Найти функцию `_psignal_internal_locked` в
+   kernelcache и добавить один printf в vresearch101 hook перед `svc`.
+2. Или узкий VR_MOV0 сразу после `braa x22, x17` @ `0xfffffe000928c538`
+   в `mac_vnode_check_signature` — реальный hook исполняется (out-params
+   правильные), но x0 обнуляется ПОСЛЕ. Требует новый VR_XORX0 hook в
+   `overlay/target/arm/tcg/translate-a64.c` (тип "выполнить + обнулить x0").
+
+**Session 48 (реальный next)**: реализовать VR_XORX0 = "execute instruction
+then set x0=0" или логирование psignal — для диагностики источника SIGKILL.
+
+**Итого 9 сессий (40-47) закоммичено в GitHub**. Прогресс:
+- TC-в-DT, HW AF EL0, AMFI-bypass — стабильно работают
+- fsck выполняется без CS-барьеров
+- Launchd exec-ит tasks (или что-то делает после fsck)
+- SIGKILL init — стенка, требующая либо диагностики psignal либо
+  ULTRA-точечного patch AMFI (out-params).

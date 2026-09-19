@@ -19,11 +19,10 @@ export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe00
 # Найдено xref к строке "AMFI: vnode_check_signature called with platform %d"
 # @VA 0xfffffe00071f79e5, ADRP+ADD @0xfffffe0007d56e34, prolog pacibsp @dd4.
 export VR_RET0="0xfffffe0007d56dd4"
-# 0xfffffe0007d56dd4 = AppleMobileFileIntegrity::vnode_check_signature — allow all CS.
-# Пробовали ещё 0xfffffe0008f9d8a4 (SIGKILL-init panic wrapper) в session 45 —
-# скипнули эту панику, но открылась новая "shenanigans!" @evaluate.c:0x137b
-# (AMFI evaluate/policy sanity check). Слишком широкий bypass ломает
-# invariants → session 46 нужен более узкий подход.
+# 0xfffffe0007d56dd4 = kernel: AppleMobileFileIntegrity::vnode_check_signature.
+# Session 47: пробовали user-space VR_RET0 на launchd do_boot_task (0x100048cd0)
+# и убирать AMFI bypass полностью — оба не помогли. Без AMFI bypass возвращается
+# старая TXM GL0 паника; с ним = SIGKILL init. Нужен более точный AMFI patch.
 export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
 set +e
 
