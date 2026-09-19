@@ -1401,3 +1401,48 @@ panic на valid flow без изменения структуры функци�
   как reference для будущего).
 - `patch_kc.py` — 4 новых NOP оставлены в PATCHES dict (не применяются пока
   mkpreboot не указывает на patched.im4p).
+
+## Обновление 19.09 (50) — patch_cs.py + tc_append.py + stage_boot_tasks.sh
+Реализован полный CDHash-цикл для fake exit-0 стабов:
+- `tools/patch_cs.py` — читает Mach-O, применяет `mov w0,#0; ret @LC_MAIN
+  entryoff`, пересчитывает SHA256 всех hash slots в CD blob, возвращает
+  новый CDHash (SHA256 CD blob[0:20]). Верифицировано на fsck.
+- `tools/tc_append.py` — добавляет 24-байтные entries в TC blob v2
+  (hashtype=0xC002, flags=0x3 как оригинальный fsck slot #5).
+- `tools/stage_boot_tasks.sh` — делает stub из /sbin/fsck, кладёт в 3
+  пути launchd hardwired boot tasks:
+  - /usr/libexec/MSUEarlyBootTask
+  - /usr/libexec/MobileAssetEarlyBootTask
+  - /System/Library/PrivateFrameworks/MobileAccessoryUpdater.framework/Support/auearlyboot
+  добавляет CDHash в TC blob. (`darwinos-boot-task` — путь не найден.)
+
+**Результат прогона**: та же паника "unexpected SIGKILL of init"
+(**namespace=9 = OS_REASON_EXEC**, **code=1 = EXEC_EXIT_REASON_BAD_MACHO**,
+description "none").
+
+Уточнил через тест без стабов: **SIGKILL init происходит ДО** любого exec
+наших стабов (0 real EL0 faults). Значит root cause не в missing tasks:
+- launchd exec-ит какой-то бинарь ДО boot tasks (early dyld / dyld shared
+  cache / init framework),
+- этот бинарь имеет невалидную Mach-O структуру для exec parser
+  (EXEC_EXIT_REASON_BAD_MACHO),
+- AMFI-bypass VR_RET0 vnode_check_signature делает allow, но exec_parser
+  всё равно детектит структурную ошибку и SIGKILL init.
+
+**Root cause SIGKILL init = наш AMFI-bypass пропускает бинарь с BAD_MACHO**.
+Без bypass = TXM GL0 crash (не проходит верификацию).
+
+**Fundamental blocker**: узкий AMFI-bypass нужен, но найти "правильную"
+границу — реверс `evaluate.c` в AppleMobileFileIntegrity kext (сложно).
+Или пересборка rootfs — но launchd сам может подать exec BAD_MACHO'нутого
+бинаря (не пропущенного нашими стабами).
+
+**Session 51 предложения**:
+1. Найти строки "BAD_MACHO"/"bad Mach-O" в kernel — где именно exec_parser
+   генерирует этот exit reason; найти условие; проверить какой файл
+   не проходит.
+2. Или добавить VR_WATCH на функцию exec_parser которая генерирует
+   BAD_MACHO — логировать имя файла.
+3. Или fundamentally сузить AMFI-bypass через реверс evaluate.c.
+
+Все правки сессии 50 в git (инфраструктура для будущего).
