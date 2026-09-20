@@ -1562,3 +1562,35 @@ init для fsck**, но следующий exec bad_macho — от другог
    - Ядро XNU перешло в нормальный рабочий `machine_idle` (`0xfffffe0008c1cbf0`, `wfi`), обрабатывая таймерные тики и аппаратные прерывания!
    - Гость стабильно работает до истечения таймера таймаута без единого сбоя!
 
+## Обновление 20.09 (55-56) — Глубокий реверс userspace launchd, pe_serial и boot_args
+1. **Анализ выполнения userspace `/sbin/launchd` (PID 1):**
+   - Разработан инструмент `tools/trace_all_svcs.py` для хронологического анализа всех 47,121 вызовов `SVC`.
+   - **Фаза 1 (dyld bootstrap):** Первые системные вызовы dyld (`ESR 0x15/0x56000010` @ `0x105aac`, `0x56000050` @ `0x105438`, `0x5600000b`, `0x5600000a`, `0x560000a1`, `0x56000001`, `0x560000c5`).
+   - **Фаза 2 (dyld shared cache):** Успешная загрузка и маппинг библиотек системного кэша.
+   - **Фаза 3 (Mach IPC / libdispatch):** Регистрация портов Mach (`task_self_trap`, `mach_port_allocate`, `mach_reply_port`).
+   - **Фаза 4 (Main event loop):** PID 1 переходит в ожидание событий через `mach_msg_trap` (`ESR 0x56000000` @ `ELR_GL 0xfffffe001df30008`) и `kevent64` (`ESR 0x56000026` @ `ELR_GL 0xfffffe001defd39c`).
+   - 24,902 вызова Guarded Execution (SPTM/TXM) обработаны полностью штатно.
+   - Полное отсутствие сбоев, паник, SIGKILL и исключений в EL0!
+
+2. **Реверс-инжиниринг ранней консоли ядра XNU (`pe_serial_init` @ `0xfffffe000927cca4`):**
+   - Дизассемблированы функции `pe_serial_init`, `0xfffffe000927b61c` и модуль DeviceTree.
+   - Выявлена причина тишины на UART после `======== End of iBoot serial output. ========`:
+     - `pe_serial_init` вызывает `0xfffffe000927b61c`, которая проверяет флаг `[0xfffffe000779a0e8]` (`cbz w8, #0xfffffe000927b68c`).
+     - В исходном `kernelcache` этот флаг в сегменте `__DATA_CONST` равен 0.
+     - При нуле функция возвращает `x0 = 0`, после чего `0xfffffe000927cd18: cbz x0, #0xfffffe000927cfd4` устанавливает `serial_initted = 1` и возвращает 0 (failure), пропуская инициализацию драйвера PL011 (`arm,pl011`).
+   - Определена структура глобальной таблицы DeviceTree по адресу `0xfffffe000779a000`: `dt_base` @ `+0xd0`, `dt_end` @ `+0xe0`, `dt_flags` @ `+0xe8`, `boot_args` @ `+0x2c0`.
+
+3. **Реверс структуры boot_args и передачи параметров в ядро:**
+   - Дизассемблирована точка входа `start_first_cpu` (`0xfffffe00092d0000`):
+     - `x0 = 0` идентифицирует первичный загрузочный процессор (CPU 0).
+     - `x1` передаёт указатель на структуру `boot_args`.
+     - `CommandLine` расположен со смещением `boot_args + 0x6c`.
+   - Создан инструмент `tools/set_nvram_bootargs.py` с расчётом CHRP-контрольной суммы для записи аргументов `debug=0x144 -v serial=3` в раздел NVRAM `common`.
+
+4. **Новый инструментарий в репозитории:**
+   - `tools/trace_all_svcs.py`: детальный разбор и трассировка всех SVC вызовов launchd.
+   - `tools/inspect_serial_init.py`: анализ драйвера и строк `pe_serial_init`.
+   - `tools/disasm_dt.py`: реверс структуры и функций DeviceTree XNU.
+   - `tools/disasm_boot_branches.py`: анализ точек входа и веток `start_first_cpu`.
+   - `tools/count_elr.py`: гистограмма адресов возврата в userspace.
+   - `tools/set_nvram_bootargs.py`: утилита конфигурации NVRAM boot-args.
