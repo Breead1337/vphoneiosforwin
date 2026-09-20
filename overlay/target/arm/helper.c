@@ -8814,12 +8814,96 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                     if (!svclog) svclog = fopen("svc.log", "w");
                 }
                 if (svclog) {
-                    fprintf(svclog, "[SVC%s %s %5d (%s)] pc=0x%" PRIx64 " a0=0x%" PRIx64 " a1=0x%" PRIx64 " a2=0x%" PRIx64,
+                    fprintf(svclog, "[SVC%s %s %5d (%s)] pc=0x%" PRIx64 " a0=0x%" PRIx64 " a1=0x%" PRIx64 " a2=0x%" PRIx64 " a3=0x%" PRIx64 " x16=0x%" PRIx64 " lr=0x%" PRIx64 " sp=0x%" PRIx64,
                             from_gl ? "-GL" : "   ", class_str, sysno, sname[0] ? sname : "unknown",
-                            upc, a0, a1, a2);
+                            upc, a0, a1, a2, a3, env->xregs[16], env->xregs[30], env->xregs[31]);
                     if (s0[0]) fprintf(svclog, " s0=\"%s\"", s0);
                     if (s1[0]) fprintf(svclog, " s1=\"%s\"", s1);
                     if (s2[0]) fprintf(svclog, " s2=\"%s\"", s2);
+
+                    /* For userspace (EL0) traps, read buffer contents using stage 1 EL0 MMU */
+                    if (!from_gl) {
+                        static bool dumped_base = false;
+                        if (!dumped_base) {
+                            dumped_base = true;
+                            uint32_t base_hdr[8] = {0};
+                            for (int k = 0; k < 8; k++) {
+                                uint64_t baddr = 0x70000000ULL + k * 4;
+                                GetPhysAddrResult r = {};
+                                ARMMMUFaultInfo fi = {};
+                                if (!get_phys_addr(env, baddr, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                                    !get_phys_addr(env, baddr, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
+                                    address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &base_hdr[k], 4);
+                                }
+                            }
+                            fprintf(svclog, " base@0x70000000=[%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x]\n",
+                                    base_hdr[0], base_hdr[1], base_hdr[2], base_hdr[3],
+                                    base_hdr[4], base_hdr[5], base_hdr[6], base_hdr[7]);
+                        }
+
+                        uint32_t insns[16] = {0};
+                        for (int k = 0; k < 16; k++) {
+                            uint64_t iaddr = upc - 16 + k * 4;
+                            GetPhysAddrResult r = {};
+                            ARMMMUFaultInfo fi = {};
+                            if (!get_phys_addr(env, iaddr, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                                !get_phys_addr(env, iaddr, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
+                                address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &insns[k], 4);
+                            }
+                        }
+                        fprintf(svclog, " insns_around=[%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x]",
+                                insns[0], insns[1], insns[2], insns[3], insns[4], insns[5], insns[6], insns[7],
+                                insns[8], insns[9], insns[10], insns[11], insns[12], insns[13], insns[14], insns[15]);
+
+                        /* Dump memory at a0 */
+                        if (a0 >= 0x1000) {
+                            uint32_t buf0[8] = {0};
+                            for (int k = 0; k < 8; k++) {
+                                uint64_t maddr = a0 + k * 4;
+                                GetPhysAddrResult r = {};
+                                ARMMMUFaultInfo fi = {};
+                                if (!get_phys_addr(env, maddr, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                                    !get_phys_addr(env, maddr, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
+                                    address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &buf0[k], 4);
+                                }
+                            }
+                            fprintf(svclog, " a0_mem=[%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x]",
+                                    buf0[0], buf0[1], buf0[2], buf0[3], buf0[4], buf0[5], buf0[6], buf0[7]);
+                        }
+                        /* Dump memory at a1 */
+                        if (a1 >= 0x1000) {
+                            uint32_t buf1[8] = {0};
+                            for (int k = 0; k < 8; k++) {
+                                uint64_t maddr = a1 + k * 4;
+                                GetPhysAddrResult r = {};
+                                ARMMMUFaultInfo fi = {};
+                                if (!get_phys_addr(env, maddr, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                                    !get_phys_addr(env, maddr, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
+                                    address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &buf1[k], 4);
+                                }
+                            }
+                            fprintf(svclog, " a1_mem=[%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x]",
+                                    buf1[0], buf1[1], buf1[2], buf1[3], buf1[4], buf1[5], buf1[6], buf1[7]);
+                        }
+
+                        /* Dump stack memory */
+                        uint64_t usp = env->xregs[31];
+                        if (usp >= 0x1000) {
+                            uint32_t sbuf[16] = {0};
+                            for (int k = 0; k < 16; k++) {
+                                uint64_t saddr = usp + k * 4;
+                                GetPhysAddrResult r = {};
+                                ARMMMUFaultInfo fi = {};
+                                if (!get_phys_addr(env, saddr, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                                    !get_phys_addr(env, saddr, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
+                                    address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &sbuf[k], 4);
+                                }
+                            }
+                            fprintf(svclog, " sp_mem=[%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x]",
+                                    sbuf[0], sbuf[1], sbuf[2], sbuf[3], sbuf[4], sbuf[5], sbuf[6], sbuf[7],
+                                    sbuf[8], sbuf[9], sbuf[10], sbuf[11], sbuf[12], sbuf[13], sbuf[14], sbuf[15]);
+                        }
+                    }
                     fprintf(svclog, "\n");
                     fflush(svclog);
                 }
