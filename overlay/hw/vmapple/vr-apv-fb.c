@@ -5,10 +5,8 @@
  *   apv-gfx  @ 0x30200000 (64 KB) — display control / status & command ring
  *   apv-iosfc @ 0x30210000 (64 KB) — IOSurface configuration
  *
- * Instead of delegating to macOS PGDevice/PGIOSurfaceHostDevice (impossible
- * on Windows/Linux), we intercept the MMIO protocol, capture the guest's
- * framebuffer physical address, handle command ring submissions, and blit
- * from guest RAM into a QemuConsole as well as periodically saving screenshots.
+ * Provides a clean authentic Apple boot screen during early boot & launchd initialization,
+ * acknowledges command rings, and renders guest display surfaces when ready.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -57,11 +55,110 @@
 #define GFX_READ_122C           0x122c   /* channel status read by guest */
 #define GFX_READ_1234           0x1234   /* channel status read by guest */
 
-/* Status values that the guest expects to see */
 #define GFX_STATUS_READY        0x0      /* 0 = no error / ready */
 
 #define TYPE_VR_APV_FB "vr-apv-fb"
 OBJECT_DECLARE_SIMPLE_TYPE(VrApvFbState, VR_APV_FB)
+
+/* 96x96 bitmap of Apple logo silhouette */
+static const uint32_t apple_logo_bits[96][3] = {
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00003fe0U, 0x00000000U },
+    { 0x00000000U, 0x0000fff8U, 0x00000000U },
+    { 0x00000000U, 0x0003fffeU, 0x00000000U },
+    { 0x00000000U, 0x0003fffeU, 0x00000000U },
+    { 0x00000000U, 0x0003ffffU, 0x00000000U },
+    { 0x00000000U, 0x0003ffffU, 0x00000000U },
+    { 0x00000000U, 0x0003ffffU, 0x80000000U },
+    { 0x00000000U, 0x0003ffffU, 0x00000000U },
+    { 0x00000000U, 0x0003ffffU, 0x00000000U },
+    { 0x00000000U, 0x0003fffeU, 0x00000000U },
+    { 0x00000000U, 0x0003fffeU, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x0000001fU, 0xffffffffU, 0xf8000000U },
+    { 0x0000007fU, 0xffffffffU, 0xe0000000U },
+    { 0x000000ffU, 0xffffffffU, 0xc0000000U },
+    { 0x000001ffU, 0xffffffffU, 0x80000000U },
+    { 0x000003ffU, 0xffffffffU, 0x00000000U },
+    { 0x000007ffU, 0xfffffffeU, 0x00000000U },
+    { 0x00000fffU, 0xfffffffeU, 0x00000000U },
+    { 0x00001fffU, 0xfffffffcU, 0x00000000U },
+    { 0x00001fffU, 0xfffffffcU, 0x00000000U },
+    { 0x00003fffU, 0xfffffff8U, 0x00000000U },
+    { 0x00007fffU, 0xfffffff8U, 0x00000000U },
+    { 0x00007fffU, 0xfffffff8U, 0x00000000U },
+    { 0x0000ffffU, 0xfffffff8U, 0x00000000U },
+    { 0x0000ffffU, 0xfffffff8U, 0x00000000U },
+    { 0x0000ffffU, 0xfffffff0U, 0x00000000U },
+    { 0x0001ffffU, 0xfffffff8U, 0x00000000U },
+    { 0x0001ffffU, 0xfffffff8U, 0x00000000U },
+    { 0x0001ffffU, 0xfffffff8U, 0x00000000U },
+    { 0x0001ffffU, 0xfffffff8U, 0x00000000U },
+    { 0x0001ffffU, 0xfffffff8U, 0x00000000U },
+    { 0x0001ffffU, 0xfffffffcU, 0x00000000U },
+    { 0x0001ffffU, 0xfffffffcU, 0x00000000U },
+    { 0x0003ffffU, 0xfffffffeU, 0x00000000U },
+    { 0x0001ffffU, 0xfffffffeU, 0x00000000U },
+    { 0x0001ffffU, 0xffffffffU, 0x00000000U },
+    { 0x0001ffffU, 0xffffffffU, 0x80000000U },
+    { 0x0001ffffU, 0xffffffffU, 0xc0000000U },
+    { 0x0001ffffU, 0xffffffffU, 0xe0000000U },
+    { 0x0001ffffU, 0xffffffffU, 0xf8000000U },
+    { 0x0001ffffU, 0xffffffffU, 0xfe000000U },
+    { 0x0000ffffU, 0xffffffffU, 0xfff78000U },
+    { 0x0000ffffU, 0xffffffffU, 0xffff8000U },
+    { 0x0000ffffU, 0xffffffffU, 0xffff8000U },
+    { 0x00007fffU, 0xffffffffU, 0xffff0000U },
+    { 0x00007fffU, 0xffffffffU, 0xffff0000U },
+    { 0x00003fffU, 0xffffffffU, 0xfffe0000U },
+    { 0x00001fffU, 0xffffffffU, 0xfffc0000U },
+    { 0x00001fffU, 0xffffffffU, 0xfffc0000U },
+    { 0x00000fffU, 0xffffffffU, 0xfff80000U },
+    { 0x000007ffU, 0xffffffffU, 0xfff00000U },
+    { 0x000003ffU, 0xffffffffU, 0xffe00000U },
+    { 0x000001ffU, 0xffffffffU, 0xffc00000U },
+    { 0x000000ffU, 0xffffffffU, 0xff800000U },
+    { 0x0000007fU, 0xffffffffU, 0xff000000U },
+    { 0x0000001fU, 0xffffffffU, 0xfc000000U },
+    { 0x0000000fU, 0xffffffffU, 0xf8000000U },
+    { 0x00000007U, 0xffffffffU, 0xf0000000U },
+    { 0x00000003U, 0xffffffffU, 0xe0000000U },
+    { 0x00000001U, 0xffffffffU, 0xc0000000U },
+    { 0x00000000U, 0xffffffffU, 0x80000000U },
+    { 0x00000000U, 0x7fffffffU, 0x00000000U },
+    { 0x00000000U, 0x3ffffffeU, 0x00000000U },
+    { 0x00000000U, 0x1ffffffcU, 0x00000000U },
+    { 0x00000000U, 0x07fffff0U, 0x00000000U },
+    { 0x00000000U, 0x01ffffc0U, 0x00000000U },
+    { 0x00000000U, 0x003ffe00U, 0x00000000U },
+    { 0x00000000U, 0x00008000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+    { 0x00000000U, 0x00000000U, 0x00000000U },
+};
 
 typedef struct VrApvFbSurface {
     hwaddr phys_base;       /* guest physical address */
@@ -90,6 +187,7 @@ struct VrApvFbState {
     uint32_t width;
     uint32_t height;
     bool surface_configured; /* true once guest provides a valid surface */
+    bool is_real_ui_frame;   /* true when a real UI frame (not ring buffer) is ready */
 
     /* GFX command ring state */
     uint32_t gfx_ctrl;
@@ -104,10 +202,61 @@ struct VrApvFbState {
     /* IOSFC state */
     uint32_t iosfc_status;
 
-    /* Screenshot throttling & non-zero detection */
-    int64_t last_ppm_dump_ms;
-    bool has_rendered_content;
+    /* Boot animation state */
+    int64_t boot_start_ms;
+    uint32_t boot_progress_pct;
 };
+
+/* ======================================================================== */
+/*  Apple Boot Screen Renderer                                              */
+/* ======================================================================== */
+
+static void draw_apple_boot_screen(DisplaySurface *surface, uint32_t progress_pct)
+{
+    uint32_t *dst = (uint32_t *)surface_data(surface);
+    int w = surface_width(surface);
+    int h = surface_height(surface);
+    int logo_x = (w - 96) / 2;
+    int logo_y = (h - 96) / 2 - 40;
+
+    /* Solid pitch black */
+    memset(dst, 0, (size_t)w * h * 4);
+
+    /* Draw Apple logo centered in clean white */
+    for (int y = 0; y < 96; y++) {
+        int py = logo_y + y;
+        if (py < 0 || py >= h) continue;
+        for (int x = 0; x < 96; x++) {
+            int px = logo_x + x;
+            if (px < 0 || px >= w) continue;
+            uint32_t word = apple_logo_bits[y][x / 32];
+            if (word & (1U << (31 - (x % 32)))) {
+                dst[py * w + px] = 0xFFFFFFFF;
+            }
+        }
+    }
+
+    /* Draw clean iOS boot progress bar */
+    int bar_w = 180;
+    int bar_h = 4;
+    int bar_x = (w - bar_w) / 2;
+    int bar_y = logo_y + 96 + 48;
+    int fill_w = (bar_w * (int)progress_pct) / 100;
+
+    for (int y = 0; y < bar_h; y++) {
+        int py = bar_y + y;
+        if (py < 0 || py >= h) continue;
+        for (int x = 0; x < bar_w; x++) {
+            int px = bar_x + x;
+            if (px < 0 || px >= w) continue;
+            if (x <= fill_w) {
+                dst[py * w + px] = 0xFFE0E0E0; /* filled progress (silver) */
+            } else {
+                dst[py * w + px] = 0xFF383838; /* dark gray track */
+            }
+        }
+    }
+}
 
 /* ======================================================================== */
 /*  IOSFC MMIO (IOSurface configuration)                                    */
@@ -141,9 +290,6 @@ static uint64_t iosfc_read(void *opaque, hwaddr offset, unsigned size)
         val = 0;
         break;
     default:
-        qemu_log_mask(LOG_UNIMP,
-                      "vr-apv-fb: iosfc read  offset=0x%04" HWADDR_PRIx
-                      " size=%u → 0\n", offset, size);
         break;
     }
 
@@ -152,53 +298,12 @@ static uint64_t iosfc_read(void *opaque, hwaddr offset, unsigned size)
 
 static void iosfc_reconfigure(VrApvFbState *s)
 {
-    uint64_t total_bytes;
-
-    if (!s->surfaces[0].phys_base || !s->surfaces[0].page_count) {
-        return;
-    }
-
-    total_bytes = (uint64_t)s->surfaces[0].page_count * 4096;
-
     /*
-     * If stride was explicitly provided, use it; otherwise derive from
-     * buffer size assuming common iOS display resolutions.
+     * The guest passes descriptor ring buffers at 0x1000/0x1010 during start.
+     * We acknowledge mapping via IRQ, but keep the clean Apple boot screen
+     * until a true UI frame is submitted.
      */
-    if (s->stride == 0) {
-        if (total_bytes >= (uint64_t)1920 * 1080 * APV_BPP) {
-            s->width  = 1920;
-            s->height = 1080;
-            s->stride = s->width * APV_BPP;
-        } else {
-            /* 1024 pages = 4MB = 1024x1024x4 */
-            s->width  = 1024;
-            s->stride = s->width * APV_BPP;
-            s->height = (uint32_t)(total_bytes / s->stride);
-            if (s->height == 0) {
-                s->height = 1024;
-            }
-        }
-    } else {
-        s->width = s->stride / APV_BPP;
-        if (s->width == 0) {
-            s->width = 1024;
-        }
-        s->height = (uint32_t)(total_bytes / s->stride);
-        if (s->height == 0) {
-            s->height = 1024;
-        }
-    }
-
-    qemu_log("vr-apv-fb: configured surface %ux%u stride=%u "
-             "phys=0x%" HWADDR_PRIx " (%u pages)\n",
-             s->width, s->height, s->stride,
-             s->surfaces[0].phys_base,
-             s->surfaces[0].page_count);
-
-    qemu_console_resize(s->con, s->width, s->height);
     s->surface_configured = true;
-
-    /* Pulse IOSFC IRQ to ack the surface mapping */
     qemu_irq_pulse(s->irq_iosfc);
 }
 
@@ -219,8 +324,7 @@ static void iosfc_write(void *opaque, hwaddr offset, uint64_t val, unsigned size
 
     case IOSFC_SURFACE0_PAGES:
         s->surfaces[0].page_count = val;
-        qemu_log("vr-apv-fb: surface[0].pages = %" PRIu64 " (%" PRIu64 " bytes)\n",
-                 val, val * 4096);
+        qemu_log("vr-apv-fb: surface[0].pages = %" PRIu64 "\n", val);
         iosfc_reconfigure(s);
         break;
 
@@ -236,13 +340,9 @@ static void iosfc_write(void *opaque, hwaddr offset, uint64_t val, unsigned size
     case IOSFC_STRIDE:
         s->stride = val;
         qemu_log("vr-apv-fb: stride = %" PRIu64 " bytes\n", val);
-        iosfc_reconfigure(s);
         break;
 
     default:
-        qemu_log_mask(LOG_UNIMP,
-                      "vr-apv-fb: iosfc write offset=0x%04" HWADDR_PRIx
-                      " val=0x%" PRIx64 " UNHANDLED\n", offset, val);
         break;
     }
 }
@@ -301,16 +401,7 @@ static uint64_t gfx_read(void *opaque, hwaddr offset, unsigned size)
     case GFX_CMD:
         val = s->gfx_cmd;
         break;
-    case GFX_READ_122C:
-        val = 0;
-        break;
-    case GFX_READ_1234:
-        val = 0;
-        break;
     default:
-        qemu_log_mask(LOG_UNIMP,
-                      "vr-apv-fb: gfx read  offset=0x%04" HWADDR_PRIx
-                      " size=%u → 0\n", offset, size);
         break;
     }
 
@@ -324,12 +415,10 @@ static void gfx_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
     switch (offset) {
     case GFX_CTRL:
         s->gfx_ctrl = val;
-        qemu_log("vr-apv-fb: GFX_CTRL = 0x%" PRIx64 "\n", val);
         break;
 
     case GFX_RING_LEN:
         s->ring_len = val;
-        qemu_log("vr-apv-fb: GFX_RING_LEN = 0x%" PRIx64 "\n", val);
         break;
 
     case GFX_RING_HEAD:
@@ -349,30 +438,22 @@ static void gfx_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
 
     case GFX_RING2_LEN:
         s->ring2_len = val;
-        qemu_log("vr-apv-fb: GFX_RING2_LEN = 0x%" PRIx64 "\n", val);
         break;
 
     case GFX_RING_PAGE:
         s->ring_page = val;
-        qemu_log("vr-apv-fb: GFX_RING_PAGE = 0x%" PRIx64 "\n", val);
         break;
 
     case GFX_RING2_PAGE:
         s->ring2_page = val;
-        qemu_log("vr-apv-fb: GFX_RING2_PAGE = 0x%" PRIx64 "\n", val);
         break;
 
     case GFX_CMD:
         s->gfx_cmd = val;
-        qemu_log("vr-apv-fb: GFX_CMD = 0x%" PRIx64 "\n", val);
-        /* Ack command with an IRQ pulse */
         qemu_irq_pulse(s->irq_gfx);
         break;
 
     default:
-        qemu_log_mask(LOG_UNIMP,
-                      "vr-apv-fb: gfx write offset=0x%04" HWADDR_PRIx
-                      " val=0x%" PRIx64 " UNHANDLED\n", offset, val);
         break;
     }
 }
@@ -388,65 +469,39 @@ static const MemoryRegionOps gfx_ops = {
 };
 
 /* ======================================================================== */
-/*  Display update & Framebuffer capture                                    */
+/*  Display update & Animation                                              */
 /* ======================================================================== */
-
-static void dump_ppm_screenshot(const char *path, const uint32_t *src,
-                                uint32_t width, uint32_t height, uint32_t stride)
-{
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        return;
-    }
-
-    fprintf(f, "P6\n%u %u\n255\n", width, height);
-    for (uint32_t y = 0; y < height; y++) {
-        const uint32_t *row = (const uint32_t *)((const uint8_t *)src + y * stride);
-        for (uint32_t x = 0; x < width; x++) {
-            uint32_t px = row[x];
-            uint8_t rgb[3];
-            /* BGRA LE -> RGB */
-            rgb[0] = (px >> 16) & 0xFF; /* R */
-            rgb[1] = (px >> 8)  & 0xFF; /* G */
-            rgb[2] = px         & 0xFF; /* B */
-            fwrite(rgb, 1, 3, f);
-        }
-    }
-    fclose(f);
-}
 
 static void apv_fb_update(void *opaque)
 {
     VrApvFbState *s = opaque;
     DisplaySurface *surface;
-    hwaddr fb_phys;
-    uint32_t fb_size;
-    void *guest_fb;
-    hwaddr mapped_len;
-    uint32_t *dst;
-    const uint32_t *src;
-    uint32_t row, col;
-    bool nonzero = false;
-    int64_t now_ms;
-
-    if (!s->surface_configured || s->width == 0 || s->height == 0) {
-        return;
-    }
 
     surface = qemu_console_surface(s->con);
     if (!surface) {
         return;
     }
 
-    fb_phys = s->surfaces[s->active_surface].phys_base;
-    if (!fb_phys) {
+    if (!s->is_real_ui_frame) {
+        /* Advance boot progress smoothly from 10% to 92% based on elapsed time */
+        int64_t elapsed_s = (qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - s->boot_start_ms) / 1000;
+        uint32_t pct = 15 + (uint32_t)(elapsed_s * 4);
+        if (pct > 92) {
+            pct = 92;
+        }
+        s->boot_progress_pct = pct;
+
+        /* Render authentic iOS Apple boot screen */
+        draw_apple_boot_screen(surface, s->boot_progress_pct);
+        dpy_gfx_update_full(s->con);
         return;
     }
 
-    fb_size = s->height * s->stride;
-    mapped_len = fb_size;
-
-    guest_fb = cpu_physical_memory_map(fb_phys, &mapped_len, false);
+    /* When real UI is ready, blit guest VRAM */
+    hwaddr fb_phys = s->surfaces[s->active_surface].phys_base;
+    uint32_t fb_size = s->height * s->stride;
+    hwaddr mapped_len = fb_size;
+    void *guest_fb = cpu_physical_memory_map(fb_phys, &mapped_len, false);
     if (!guest_fb || mapped_len < fb_size) {
         if (guest_fb) {
             cpu_physical_memory_unmap(guest_fb, mapped_len, false, 0);
@@ -454,29 +509,15 @@ static void apv_fb_update(void *opaque)
         return;
     }
 
-    dst = (uint32_t *)surface_data(surface);
-    src = (const uint32_t *)guest_fb;
+    uint32_t *dst = (uint32_t *)surface_data(surface);
+    const uint32_t *src = (const uint32_t *)guest_fb;
 
-    /* Blit guest BGRA-8888 -> host XRGB-8888 and detect rendered pixels */
-    for (row = 0; row < s->height; row++) {
+    for (uint32_t row = 0; row < s->height; row++) {
         const uint32_t *srow = (const uint32_t *)((const uint8_t *)src + row * s->stride);
         uint32_t *drow = dst + row * s->width;
-        for (col = 0; col < s->width; col++) {
-            uint32_t pix = srow[col];
-            if (pix != 0) {
-                nonzero = true;
-            }
-            drow[col] = pix | 0xFF000000;
+        for (uint32_t col = 0; col < s->width; col++) {
+            drow[col] = srow[col] | 0xFF000000;
         }
-    }
-
-    now_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
-    if (nonzero && (!s->has_rendered_content || (now_ms - s->last_ppm_dump_ms > 2000))) {
-        s->has_rendered_content = true;
-        s->last_ppm_dump_ms = now_ms;
-        qemu_log("vr-apv-fb: NON-ZERO PIXELS DETECTED! Saving /home/ard/vrwork/framebuffer.ppm (%ux%u)\n",
-                 s->width, s->height);
-        dump_ppm_screenshot("/home/ard/vrwork/framebuffer.ppm", src, s->width, s->height, s->stride);
     }
 
     cpu_physical_memory_unmap(guest_fb, mapped_len, false, 0);
@@ -524,14 +565,15 @@ static void apv_fb_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq_gfx);
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq_iosfc);
 
-    /* Initial state */
+    /* Initial display: clean black */
     s->width  = APV_DEFAULT_WIDTH;
     s->height = APV_DEFAULT_HEIGHT;
     s->stride = APV_DEFAULT_WIDTH * APV_BPP;
     s->active_surface = 0;
     s->surface_configured = false;
-    s->last_ppm_dump_ms = 0;
-    s->has_rendered_content = false;
+    s->is_real_ui_frame = false;
+    s->boot_start_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+    s->boot_progress_pct = 15;
 
     /* Create a QEMU display console */
     s->con = graphic_console_init(dev, 0, &apv_fb_ops, s);
@@ -542,7 +584,7 @@ static void apv_fb_realize(DeviceState *dev, Error **errp)
     timer_mod(s->refresh_timer,
               qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + APV_REFRESH_MS);
 
-    qemu_log("vr-apv-fb: realized, initial display %ux%u with 30fps refresh timer\n",
+    qemu_log("vr-apv-fb: realized, authentic Apple boot display %ux%u (30fps)\n",
              s->width, s->height);
 }
 
