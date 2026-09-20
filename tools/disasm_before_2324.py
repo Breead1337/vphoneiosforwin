@@ -9,8 +9,9 @@ text_exec_va = 0xfffffe0007a94000
 text_exec_off = 0x00a90000
 md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
 
-start_va = 0xfffffe000916741c
-end_va = 0xfffffe00091674a0
+# Let's inspect 0xfffffe0007d52100 to 0xfffffe0007d52320
+start_va = 0xfffffe0007d52100
+end_va = 0xfffffe0007d52324
 off = text_exec_off + (start_va - text_exec_va)
 sz = end_va - start_va
 

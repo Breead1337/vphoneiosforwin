@@ -875,23 +875,26 @@ void HELPER(vr_watch)(CPUARMState *env, uint64_t pc)
         return;
     }
 
-    /* Session 58: openat (0xfffffe0008f99624), openat_nocancel (0xfffffe0008c704f0), posix_spawn (0xfffffe0008f6e7e0) */
-    if ((pc - slide) == 0xfffffe0008f99624ULL || (pc - slide) == 0xfffffe0008c704f0ULL || (pc - slide) == 0xfffffe0008f6e7e0ULL) {
+    /* Session 58/61: openat (0xfffffe0008f99624), openat_nocancel (0xfffffe0008c704f0), posix_spawn (0xfffffe0008f6e7e0, 0xfffffe0008fd86f8) */
+    if ((pc - slide) == 0xfffffe0008f99624ULL || (pc - slide) == 0xfffffe0008c704f0ULL ||
+        (pc - slide) == 0xfffffe0008f6e7e0ULL || (pc - slide) == 0xfffffe0008fd86f8ULL) {
         uint64_t uap = env->xregs[1];
         uint64_t path_ptr = 0;
         int fd = -1;
-        bool is_spawn = ((pc - slide) == 0xfffffe0008f6e7e0ULL);
+        bool is_spawn = ((pc - slide) == 0xfffffe0008f6e7e0ULL || (pc - slide) == 0xfffffe0008fd86f8ULL);
 
         GetPhysAddrResult res = {};
         ARMMMUFaultInfo fi = {};
         /* In openat/openat_nocancel/posix_spawn, path pointer is at uap + 8 */
         if (!get_phys_addr(env, uap + 8, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E1, &res, &fi) ||
+            !get_phys_addr(env, uap + 8, MMU_DATA_LOAD, 0, ARMMMUIdx_GE10_1, &res, &fi) ||
             !get_phys_addr(env, uap + 8, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi)) {
             address_space_read(env_cpu(env)->as, res.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &path_ptr, 8);
         }
         if (!is_spawn) {
             uint64_t fd_val = 0;
             if (!get_phys_addr(env, uap, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E1, &res, &fi) ||
+                !get_phys_addr(env, uap, MMU_DATA_LOAD, 0, ARMMMUIdx_GE10_1, &res, &fi) ||
                 !get_phys_addr(env, uap, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi)) {
                 address_space_read(env_cpu(env)->as, res.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &fd_val, 4);
                 fd = (int)(int32_t)fd_val;
@@ -899,11 +902,13 @@ void HELPER(vr_watch)(CPUARMState *env, uint64_t pc)
         }
 
         char path[256] = {};
-        if (path_ptr >= 0x1000 && path_ptr < 0x1000000000ULL) {
+        if (path_ptr >= 0x1000 && path_ptr != 0xffffffffffffffffULL) {
             for (int i = 0; i < 255; i++) {
                 GetPhysAddrResult ures = {};
                 ARMMMUFaultInfo ufi = {};
                 if (!get_phys_addr(env, path_ptr + i, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &ures, &ufi) ||
+                    !get_phys_addr(env, path_ptr + i, MMU_DATA_LOAD, 0, ARMMMUIdx_GE10_0, &ures, &ufi) ||
+                    !get_phys_addr(env, path_ptr + i, MMU_DATA_LOAD, 0, ARMMMUIdx_E10_0, &ures, &ufi) ||
                     !get_phys_addr(env, path_ptr + i, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &ures, &ufi)) {
                     char c = 0;
                     address_space_read(env_cpu(env)->as, ures.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);

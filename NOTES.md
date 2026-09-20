@@ -1750,3 +1750,32 @@ init для fsck**, но следующий exec bad_macho — от другог
      - Обмен IPC/структурами (`s2="gmdp"`, `s2="idvd"`).
    - Система работает без единого сбоя, `Taking exception 1 [Undefined Instruction]` = 0, гость стабилен.
 
+## Обновление 20.09 (62-63) — Прорыв: Полный обход AMFI / StaticPlatformPolicy, запуск launchd в EL0 и перехват APV-GFX
+
+1. **Обход CoreTrust (CT) и StaticPlatformPolicy в AMFI:**
+   - **CoreTrust Policy Rejection**:
+     - В `kernelcache.research.vresearch101.bin` локализован вызов проверки CT-политики по строке `"AMFI: '%s': unsuitable CT policy %#llx for this platform/device, rejecting signature."` (`0xfffffe00071f8228`).
+     - Добавлен хук `0xfffffe0007d57a70:0xfffffe0007d57aac` в `VR_B`, перенаправляющий ветку ошибки на успешное продолжение проверки. Ошибка `unsuitable CT policy` полностью устранена.
+   - **StaticPlatformPolicy & Daemon Port Failure**:
+     - Исследован корень ошибки `"StaticPlatformPolicy<2>: no registered daemon port"` и последующего `"AMFI: code signature validation failed."`.
+     - Проверка находится непосредственно в `vnode_check_signature` по адресу `0xfffffe0007d57c54: bl #0xfffffe0007d53d4c`. Функция `0x7d53d4c` опрашивает порт демона (которого на раннем этапе загрузки ещё нет у PID 1) и возвращает ненулевой код.
+     - Инструкция `0xfffffe0007d57c58: cbz w0, #0xfffffe0007d57ea0` не срабатывала, печаталось предупреждение `StaticPlatformPolicy<2>: no registered daemon port`, и по `0xfffffe0007d57c78: b #0xfffffe0007d57694` происходил переход на `"AMFI: code signature validation failed."` с возвратом ошибки `w21 = 1`.
+     - Реализован комплексный обход:
+       - `0xfffffe0007d57c58:0xfffffe0007d57c70` в `VR_B`: пропуск вывода ошибки `StaticPlatformPolicy<2>`.
+       - `0xfffffe0007d57c78:0xfffffe0007d57880` в `VR_B`: перенаправление ветки отклонения подписи напрямую на финальный путь успеха (установка флагов `CS_VALID | CS_PLATFORM_BINARY = 0x20000000`, прикрепление `csblob` через `0x7d4b45c`, `w21 = 0`).
+       - `0xfffffe0007d524b0` в `VR_MOV0`: замена `mov x0, x24` на `mov x0, #0` перед `retab` в `mpo_proc_check_launch_constraints` (`0xfffffe0007d520c0`).
+   - **Результат**: Ошибки `StaticPlatformPolicy<2>` и `AMFI: code signature validation failed` ПОЛНОСТЬЮ ИСЧЕЗЛИ из `kprintf.log`! Валидация подписи `/sbin/launchd` успешно пройдена!
+
+2. **Исполнение `launchd` в Userspace (EL0):**
+   - Ядро успешно загрузило и запустило `/sbin/launchd` в EL0.
+   - В логе системных вызовов `svc.log` зафиксировано 8 681 вызовов:
+     - `com.apple.xpc.launchd` активен и выполняет системные вызовы `creat`, `write`, `chmod`, `read`, `wait4`.
+     - Зафиксировано более 47 000 входов `SVC` (exception 2) и 24 600 переходов `Guarded Execution Enter`.
+     - Userspace `dyld` успешно загрузил библиотеки и инициализировал основной исполняемый файл без крашей и паник.
+
+3. **Перехват инициализации графики `AppleParavirtualizedGraphics` (APV-GFX / APV-IOSFC):**
+   - В логе `us.log` зафиксированы активные обращения гостя к MMIO-регистрам графической подсистемы:
+     - `apv-gfx` (@ `0x30200000`): чтение/запись регистров `0x1014`, `0x1018`, `0x1034`, `0x1000`.
+     - `apv-iosfc` (@ `0x30210000`): конфигурирование буферов IOSurface (запись 64-битных физических адресов буферов `0x78934000`, `0x789e8000`, шаг `0x400`).
+   - Это означает, что гостевой драйвер дисплея готов к выводу картинки!
+   - **Следующий шаг**: Реализация эмуляции устройства фреймбуфера в `overlay/hw/vmapple/vresearch101.c` для маппинга VRAM и отображения окна дисплея (SDL/GTK/дамп кадров).

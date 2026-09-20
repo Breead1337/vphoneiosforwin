@@ -9,10 +9,11 @@ text_exec_va = 0xfffffe0007a94000
 text_exec_off = 0x00a90000
 md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
 
-start_va = 0xfffffe000916741c
-end_va = 0xfffffe00091674a0
+start_va = 0xfffffe0007d520c0
+end_va = 0xfffffe0007d524d4
 off = text_exec_off + (start_va - text_exec_va)
 sz = end_va - start_va
 
 for insn in md.disasm(data[off:off+sz], start_va):
-    print(f"0x{insn.address:x}: {insn.mnemonic:8s} {insn.op_str}")
+    if insn.mnemonic.startswith("ret") or insn.mnemonic.startswith("b") and not insn.mnemonic.startswith("bl"):
+        print(f"0x{insn.address:x}: {insn.mnemonic:8s} {insn.op_str}")
