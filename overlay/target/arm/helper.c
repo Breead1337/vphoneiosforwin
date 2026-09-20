@@ -8623,18 +8623,35 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
     static int el0_ring_idx;
     static int el0_total_cnt;
 
-    if (cur_el == 0 && !from_gl) {
+    if (cur_el == 0) {
         if (cs->exception_index == EXCP_SWI) {
-            /* TRUE Userspace SVC (syscall or Mach trap) */
+            /* TRUE Userspace SVC (syscall or Mach trap), both EL0 and GL0 */
             uint32_t imm = env->exception.syndrome & 0xffff;
-            int64_t x16_raw = (int64_t)env->xregs[16];
-            int32_t sysno;
-            if (imm == 0x80 || imm == 0) {
+            uint64_t x16_raw = env->xregs[16];
+            uint32_t s_class = (uint32_t)((x16_raw >> 32) & 0xff);
+            int32_t sysno = (int32_t)(x16_raw & 0xffffffffULL);
+            const char *class_str = "UNIX";
+
+            if (s_class == 1) {
+                class_str = "MACH";
+            } else if (s_class == 2) {
+                class_str = "UNIX";
+            } else if (s_class == 3) {
+                class_str = "MDEP";
+            } else if (s_class == 4) {
+                class_str = "DIAG";
+            } else if ((int64_t)x16_raw < 0) {
+                class_str = "MACH";
+                sysno = -(int32_t)(-x16_raw & 0xffffffffULL);
+            } else if (imm != 0x80 && imm != 0) {
+                class_str = "FW";
+                sysno = (int32_t)imm;
+            } else {
+                class_str = "UNIX";
                 sysno = (int32_t)(int16_t)x16_raw;
                 if (sysno == 0) sysno = (int32_t)(int16_t)env->xregs[0];
-            } else {
-                sysno = (int32_t)imm;
             }
+
             uint64_t a0 = env->xregs[0];
             uint64_t a1 = env->xregs[1];
             uint64_t a2 = env->xregs[2];
@@ -8651,7 +8668,9 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
             static int c_mprotect = 0;
             static int c_readlink = 0;
             bool skip = false;
-            if (sysno == 0 || sysno == -26 || sysno == -27) {
+            if (!strcmp(class_str, "MACH") && (sysno == -26 || sysno == -27 || sysno == -10)) {
+                if (++c_mach_msg > 15 && (c_mach_msg % 2000 != 0)) skip = true;
+            } else if (sysno == 0) {
                 if (++c_mach_msg > 15 && (c_mach_msg % 2000 != 0)) skip = true;
             } else if (sysno == 197) { /* mmap */
                 if (++c_mmap > 20 && (c_mmap % 2000 != 0)) skip = true;
@@ -8672,31 +8691,118 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
             if (!skip) {
                 char s0[128] = {0};
                 char s1[128] = {0};
-                /* Check if a0 or a1 points to a userspace string */
-                if (a0 >= 0x1000 && a0 < 0x800000000000ULL) {
-                    for (int i = 0; i < 127; i++) {
-                        GetPhysAddrResult r = {};
-                        ARMMMUFaultInfo fi = {};
-                        if (!get_phys_addr(env, a0 + i, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
-                            !get_phys_addr(env, a0 + i, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
-                            char c = 0;
-                            address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
-                            if (!c || (unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) break;
-                            s0[i] = c;
-                        } else break;
+                char s2[128] = {0};
+                uint64_t ptrs[3] = {a0, a1, a2};
+                char *bufs[3] = {s0, s1, s2};
+
+                for (int p = 0; p < 3; p++) {
+                    uint64_t ptr = ptrs[p];
+                    if (ptr >= 0x1000 && ptr != 0xffffffffffffffffULL) {
+                        for (int i = 0; i < 127; i++) {
+                            GetPhysAddrResult r = {};
+                            ARMMMUFaultInfo fi = {};
+                            if (!get_phys_addr(env, ptr + i, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                                !get_phys_addr(env, ptr + i, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
+                                char c = 0;
+                                address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
+                                if (!c) break;
+                                if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) {
+                                    if (i == 0) bufs[p][0] = 0;
+                                    break;
+                                }
+                                bufs[p][i] = c;
+                            } else break;
+                        }
                     }
                 }
-                if (a1 >= 0x1000 && a1 < 0x800000000000ULL) {
-                    for (int i = 0; i < 127; i++) {
-                        GetPhysAddrResult r = {};
-                        ARMMMUFaultInfo fi = {};
-                        if (!get_phys_addr(env, a1 + i, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
-                            !get_phys_addr(env, a1 + i, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
-                            char c = 0;
-                            address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
-                            if (!c || (unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) break;
-                            s1[i] = c;
-                        } else break;
+
+                /* Name mapping for common Darwin syscalls */
+                const char *sname = "";
+                if (!strcmp(class_str, "MACH")) {
+                    switch (sysno) {
+                    case -10: sname = "mach_reply_port"; break;
+                    case -12: sname = "host_self_trap"; break;
+                    case -14: sname = "task_self_trap"; break;
+                    case -15: sname = "host_page_size"; break;
+                    case -26: sname = "mach_msg_trap"; break;
+                    case -27: sname = "mach_msg_overwrite_trap"; break;
+                    case -28: sname = "semaphore_signal_trap"; break;
+                    case -29: sname = "semaphore_signal_all_trap"; break;
+                    case -30: sname = "semaphore_signal_thread_trap"; break;
+                    case -31: sname = "semaphore_wait_trap"; break;
+                    case -32: sname = "semaphore_wait_signal_trap"; break;
+                    case -33: sname = "semaphore_timedwait_trap"; break;
+                    case -36: sname = "task_for_pid"; break;
+                    case -61: sname = "thread_switch"; break;
+                    case -89: sname = "mach_timebase_info_trap"; break;
+                    default: break;
+                    }
+                } else if (!strcmp(class_str, "UNIX")) {
+                    switch (sysno) {
+                    case 1: sname = "exit"; break;
+                    case 2: sname = "fork"; break;
+                    case 3: sname = "read"; break;
+                    case 4: sname = "write"; break;
+                    case 5: sname = "open"; break;
+                    case 6: sname = "close"; break;
+                    case 7: sname = "wait4"; break;
+                    case 8: sname = "creat"; break;
+                    case 9: sname = "link"; break;
+                    case 10: sname = "unlink"; break;
+                    case 14: sname = "mknod"; break;
+                    case 15: sname = "chmod"; break;
+                    case 20: sname = "getpid"; break;
+                    case 21: sname = "mount"; break;
+                    case 22: sname = "unmount"; break;
+                    case 23: sname = "setuid"; break;
+                    case 24: sname = "getuid"; break;
+                    case 30: sname = "accept"; break;
+                    case 33: sname = "access"; break;
+                    case 35: sname = "fchown"; break;
+                    case 36: sname = "sync"; break;
+                    case 37: sname = "kill"; break;
+                    case 39: sname = "getppid"; break;
+                    case 44: sname = "profil"; break;
+                    case 45: sname = "ktrace"; break;
+                    case 50: sname = "setlogin"; break;
+                    case 53: sname = "sigaltstack"; break;
+                    case 54: sname = "ioctl"; break;
+                    case 58: sname = "readlink"; break;
+                    case 59: sname = "execve"; break;
+                    case 60: sname = "umask"; break;
+                    case 66: sname = "vfork"; break;
+                    case 73: sname = "munmap"; break;
+                    case 74: sname = "mprotect"; break;
+                    case 80: sname = "getgroups"; break;
+                    case 98: sname = "connect"; break;
+                    case 101: sname = "memorystatus_control"; break;
+                    case 136: sname = "mkdir"; break;
+                    case 137: sname = "rmdir"; break;
+                    case 188: sname = "stat"; break;
+                    case 189: sname = "fstat"; break;
+                    case 194: sname = "posix_spawn"; break;
+                    case 197: sname = "mmap"; break;
+                    case 202: sname = "sysctl"; break;
+                    case 216: sname = "open_dprotected_np"; break;
+                    case 218: sname = "fstat64"; break;
+                    case 220: sname = "getattrlist"; break;
+                    case 221: sname = "setattrlist"; break;
+                    case 244: sname = "posix_spawn"; break;
+                    case 327: sname = "issetugid"; break;
+                    case 328: sname = "__pthread_kill"; break;
+                    case 329: sname = "__pthread_sigmask"; break;
+                    case 333: sname = "__pthread_canceled"; break;
+                    case 338: sname = "stat64"; break;
+                    case 360: sname = "bsdthread_create"; break;
+                    case 361: sname = "bsdthread_terminate"; break;
+                    case 362: sname = "bsdthread_register"; break;
+                    case 380: sname = "kevent64"; break;
+                    case 423: sname = "openat"; break;
+                    case 424: sname = "openat_nocancel"; break;
+                    case 444: sname = "csrctl"; break;
+                    case 447: sname = "guarded_open_np"; break;
+                    case 516: sname = "ulock_wait/wake"; break;
+                    default: break;
                     }
                 }
 
@@ -8708,17 +8814,13 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                     if (!svclog) svclog = fopen("svc.log", "w");
                 }
                 if (svclog) {
-                    fprintf(svclog, "[SVC %5d (x16=0x%" PRIx64 ")] pc=0x%" PRIx64 " a0=0x%" PRIx64 " a1=0x%" PRIx64 " a2=0x%" PRIx64,
-                            sysno, x16_raw, upc, a0, a1, a2);
-                    if (s0[0] && s1[0]) {
-                        fprintf(svclog, " s0=\"%s\" s1=\"%s\"\n", s0, s1);
-                    } else if (s0[0]) {
-                        fprintf(svclog, " str=\"%s\"\n", s0);
-                    } else if (s1[0]) {
-                        fprintf(svclog, " str=\"%s\"\n", s1);
-                    } else {
-                        fprintf(svclog, "\n");
-                    }
+                    fprintf(svclog, "[SVC%s %s %5d (%s)] pc=0x%" PRIx64 " a0=0x%" PRIx64 " a1=0x%" PRIx64 " a2=0x%" PRIx64,
+                            from_gl ? "-GL" : "   ", class_str, sysno, sname[0] ? sname : "unknown",
+                            upc, a0, a1, a2);
+                    if (s0[0]) fprintf(svclog, " s0=\"%s\"", s0);
+                    if (s1[0]) fprintf(svclog, " s1=\"%s\"", s1);
+                    if (s2[0]) fprintf(svclog, " s2=\"%s\"", s2);
+                    fprintf(svclog, "\n");
                     fflush(svclog);
                 }
             }
