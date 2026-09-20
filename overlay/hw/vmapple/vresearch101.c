@@ -511,8 +511,13 @@ static void vr_init(MachineState *machine)
     /* ponytail: logging stubs until each block is reversed */
     /* anything else in the arm-io window: log + read 0 instead of an external abort (XNU panics on SEA) */
     create_unimplemented_device("arm-io-hole", 0x10000000, 0x30000000);
-    create_unimplemented_device("apv-gfx", memmap[VR_APV_GFX].base, memmap[VR_APV_GFX].size);
-    create_unimplemented_device("apv-iosfc", memmap[VR_APV_IOSFC].base, memmap[VR_APV_IOSFC].size);
+    /* APV framebuffer: replaces PVG (macOS-only ParavirtualizedGraphics) */
+    sbd = SYS_BUS_DEVICE(qdev_new("vr-apv-fb"));
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, memmap[VR_APV_GFX].base);   /* GFX MMIO */
+    sysbus_mmio_map(sbd, 1, memmap[VR_APV_IOSFC].base);  /* IOSFC MMIO */
+    sysbus_connect_irq(sbd, 0, spi(vms, VR_APV_GFX));    /* SPI 0x11 */
+    sysbus_connect_irq(sbd, 1, spi(vms, VR_APV_IOSFC));  /* SPI 0x10 */
     create_unimplemented_device("avp-rtc", memmap[VR_AVP_RTC].base, memmap[VR_AVP_RTC].size);
     sbd = SYS_BUS_DEVICE(qdev_new(TYPE_VR_SEP_MBOX));
     sysbus_realize_and_unref(sbd, &error_fatal);

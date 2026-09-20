@@ -67,7 +67,7 @@ timeout ${T:-360} "$Q" -M vresearch101 -smp 1 -m 4G \
   -drive if=pflash,format=raw,file="$W/root2.img",file.locking=off \
   -drive if=none,id=root0,format=raw,file="$W/root2.img",file.locking=off \
   -device vmapple-virtio-blk-pci,drive=root0,variant=root \
-  -display none -serial file:"$W/us.uart" \
+  -display gtk -serial file:"$W/us.uart" \
   -d unimp,guest_errors,int -D "$W/us.log" \
   -cpu apple-gxf,pauth-noop=off,pauth-impdef=on
 
