@@ -1634,3 +1634,45 @@ init для fsck**, но следующий exec bad_macho — от другог
    - Для мгновенного вывода консоли: хук `VR_WATCH` на `0xfffffe0008ad5a9c` (`cnputc`) с прямой передачей символов в `stderr` / `us.uart`.
    - Для штатной работы PL011: NOP на `0xfffffe0008c12c5c` (`cbz w8, #0xfffffe0008c12c94`) для сквозного выполнения `PE_init_platform`.
    - Подача сигналов/событий в kqueue/Mach-порт `launchd` для инициализации служб из `/System/Library/LaunchDaemons`.
+
+## Обновление 20.09 (58) — Исторический прорыв: Полный перехват живой консоли ядра XNU (kprintf) и расшифровка загрузки
+
+1. **Разгадка механизма подавления kprintf в ядре XNU:**
+   - Детально реверсирована архитектура `kprintf` (`0xfffffe0008ad579c`):
+     1. Функция `kprintf(const char *fmt, ...)` форматирует строку через `_doprnt` (`0xfffffe0008ad4624`) в локальный буфер на стеке.
+     2. Затем вызывает внутренний флашер `0xfffffe0008be9f70(const char *buf, uint32_t len)`.
+     3. В `0xfffffe0008be9f70` первой же инструкцией проверяется флаг `disable_kprintf` (`[0xfffffe000943d2f8]`):
+        ```
+        0xfffffe0008be9f98: adrp x8, #0xfffffe000943d000
+        0xfffffe0008be9f9c: ldr  w8, [x8, #0x2f8]
+        0xfffffe0008be9fa0: cbz  w8, #0xfffffe0008be9fc4
+        0xfffffe0008be9fc0: retab
+        ```
+     4. Если `[0xfffffe000943d2f8] != 0`, функция немедленно возвращает управление (`retab`), не выводя ни единого байта!
+     5. Флаг `disable_kprintf` сбрасывается в 0 только в `kernel_bootstrap` (`0xfffffe0008a73aa0`), но только при условии, что `debug_flags` содержит бит 5 (`0x20` / `DB_KPRT`). Из-за отсутствия этого флага ядро работало в режиме полного молчания!
+
+2. **Реализация прямого перехвата консоли в QEMU (`helper-a64.c`):**
+   - Добавлен перехват в `HELPER(vr_watch)` на адрес `0xfffffe0008be9f70`:
+     - `x0` = виртуальный адрес буфера с полностью отформатированной строкой.
+     - `x1` = точная длина строки (`len`).
+     - QEMU через `get_phys_addr` и `address_space_read` транслирует виртуальные адреса ядра/стека в физические и пишет поток в `stderr` и файл `kprintf.log`.
+   - Добавлен посимвольный перехват на `cnputc` (`0xfffffe0008ad5a9c`).
+   - В `tools/run_userspace.sh` добавлены адреса `0xfffffe0008ad5a9c` и `0xfffffe0008be9f70` в `VR_WATCH`, а также NOP на `0xfffffe0008c12c5c` в `VR_NOP`.
+
+3. **Получен первый в истории проекта полный лог ядра XNU (210 строк!):**
+   - **Инициализация подсистем:** Darwin Image4 Extension 7.0.0, AMFI research mode, PSCI 1.1, APV-IOSFC, AppleS8000AES (aes-version 3, 36-bit address width), PCI (3 устройства, 1 мост).
+   - **I/O Kit & Управление питанием:** `AppleSEPManager`, `AppleCredentialManager` (KE[1] inited and started), `CoreAnalyticsHub`, `AppleVirtIOStorageDevice`.
+   - **Монтирование APFS RootFS:**
+     - Обнаружен диск `disk0s1` и смонтирован `disk1s2` как том `System` (UUID: `DC184189-7B76-4A6B-8DAF-7CE36540C38B`, 4096-byte blocks, unencrypted, features: 1.0.2).
+     - Режим ARV (Authenticated Root Volume) активен.
+   - **AMFI & Запуск launchd:**
+     - `AMFI: '/sbin/launchd' is adhoc signed.`
+     - `AMFI: '/sbin/launchd': unsuitable CT policy 0 for this platform/device, rejecting signature.`
+     - `AMFI: code signature validation failed.`
+     - `TXM [Error]: CodeSignature: selector: 24 | 0x02 | 0x22 | 3`
+     - Благодаря нашим байпасам (`VR_MOV0` на `vnode_check_signature` @ `0xfffffe0007d5785c`), `launchd` всё равно успешно стартовал и выполнил 47,075 системных вызовов!
+
+4. **Текущий статус launchd:**
+   - Процесс 1 находится в основном цикле обработки событий `kevent64` и `mach_msg_trap`.
+   - Следующий шаг: трассировка открываемых файлов (`openat` @ `0xfffffe0008f99624`) и событий kqueue (`kevent64` @ `0xfffffe0008f73268`), чтобы активировать запуск системных демонов из `/System/Library/LaunchDaemons`.
+

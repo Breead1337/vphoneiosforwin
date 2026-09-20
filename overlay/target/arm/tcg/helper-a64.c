@@ -808,6 +808,73 @@ illegal_return:
 void HELPER(vr_watch)(CPUARMState *env, uint64_t pc)
 {
     uint64_t slide = env->cp15.vbar_el[1] - 0xfffffe0008a5f000ULL;
+
+    /* Session 58: cnputc (0xfffffe0008ad5a9c) - direct XNU kernel & userspace console output stream.
+     * Captures all kprintf, printf, panics, and /dev/console writes. */
+    if ((pc - slide) == 0xfffffe0008ad5a9cULL) {
+        char c = (char)(env->xregs[0] & 0xff);
+        fputc(c, stderr);
+        static FILE *klog = NULL;
+        static bool klog_opened = false;
+        if (!klog_opened) {
+            klog_opened = true;
+            klog = fopen("/home/ard/vrwork/kprintf.log", "a");
+            if (!klog) {
+                klog = fopen("kprintf.log", "a");
+            }
+        }
+        if (klog) {
+            fputc(c, klog);
+            if (c == '\n') {
+                fflush(klog);
+            }
+        }
+        if (c == '\n') {
+            fflush(stderr);
+        }
+        return;
+    }
+
+    /* Session 58: kprintf buffer output (0xfffffe0008be9f70) - captures fully-formatted kprintf strings.
+     * x0 = buffer pointer, x1 = length. Bypasses disable_kprintf flag! */
+    if ((pc - slide) == 0xfffffe0008be9f70ULL) {
+        uint64_t ptr = env->xregs[0];
+        uint32_t len = (uint32_t)env->xregs[1];
+        if (len > 0 && len < 4096 && ptr >= 0x1000) {
+            static FILE *klog = NULL;
+            static bool klog_opened = false;
+            if (!klog_opened) {
+                klog_opened = true;
+                klog = fopen("/home/ard/vrwork/kprintf.log", "a");
+                if (!klog) {
+                    klog = fopen("kprintf.log", "a");
+                }
+            }
+            for (uint32_t i = 0; i < len; i++) {
+                GetPhysAddrResult res = {};
+                ARMMMUFaultInfo fi = {};
+                uint64_t vaddr = ptr + i;
+                bool ok = !get_phys_addr(env, vaddr, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi);
+                if (!ok && (vaddr >= 0xfffffe0000000000ULL)) {
+                    ok = !get_phys_addr(env, vaddr, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E1, &res, &fi);
+                }
+                if (ok) {
+                    char c = 0;
+                    address_space_read(env_cpu(env)->as, res.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
+                    fputc(c, stderr);
+                    if (klog) {
+                        fputc(c, klog);
+                    }
+                }
+            }
+            fflush(stderr);
+            if (klog) {
+                fflush(klog);
+            }
+        }
+        return;
+    }
+
     qemu_log("watch 0x%" PRIx64 " x0=0x%" PRIx64 " x1=0x%" PRIx64 " x2=0x%" PRIx64 " x3=0x%" PRIx64
              " x8=0x%" PRIx64 " x16-s=0x%" PRIx64 " x19=0x%" PRIx64 " x20=0x%" PRIx64 " x21=0x%" PRIx64
              " lr-s=0x%" PRIx64 "\n",

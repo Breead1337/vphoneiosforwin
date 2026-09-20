@@ -5,11 +5,12 @@ W=~/vrwork
 FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
 TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
-rm -f $W/us.uart $W/us.log
-export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c"
+rm -f $W/us.uart $W/us.log $W/kprintf.log
+export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c,0xfffffe0008c12c5c"
 # 0xfffffe0008f3a91c — rootvp auth (session 35).
 # 0xfffffe0008f6f214 — BSD signal psignal(initproc, SIGKILL) bypass (session 48/53).
 # 0xfffffe0008f7c25c — reap_child_locked psignal_with_reason(initproc, SIGKILL, BAD_MACHO) bypass (session 53).
+# 0xfffffe0008c12c5c — arm_init cbz w8 skips PE_init_platform & pe_serial_init (session 57/58).
 # Session 49: пробовали NOP на 4 panic (evaluate + BSD signal) — "Kernel
 # instruction fetch abort" (unreachable code после noreturn panic).
 # Патч kernelcache через tools/patch_kc.py — iBoot отверг ("Kernelcache
@@ -40,9 +41,11 @@ export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe00
 # @ 0xfffffe0007d5785c. Функция выполнится полностью (out-params правильные),
 # но result затрётся в 0 → AMFI allow. Гипотеза: BAD_MACHO SIGKILL init
 # был из-за out-params corruption от полного skip функции.
-export VR_WATCH="0xfffffe0008f77aac"
+export VR_WATCH="0xfffffe0008f77aac,0xfffffe0008ad5a9c,0xfffffe0008be9f70"
 # Session 53: watch func containing "Process 1 exec of %s failed" panic.
 # x0=proc, x1=exec_args, x2=..., lr=caller — узнаем какой path exec-ит init.
+# Session 58: 0xfffffe0008ad5a9c — cnputc direct console interception.
+# Session 58: 0xfffffe0008be9f70 — kprintf buffer output interception.
 export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
 set +e
 
@@ -59,6 +62,12 @@ timeout ${T:-360} "$Q" -M vresearch101 -smp 1 -m 4G \
 echo "RC=$?"
 echo "=== UART tail ==="
 tail -n 40 "$W/us.uart"
+echo "=== kprintf.log tail ==="
+if [ -f "$W/kprintf.log" ]; then
+  tail -n 80 "$W/kprintf.log"
+else
+  echo "(kprintf.log is empty or not created)"
+fi
 echo "=== last user panics/exits in log ==="
 grep -aE 'udef@x[0-4]=|udef@\*x3\[[0-9]|userspace panic|fsck|launchd|boot task|CS_KILLED|EXIT_REASON' "$W/us.log" | tail -40
 echo "=== EL0 fault ring ==="
