@@ -8623,9 +8623,107 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
     static int el0_ring_idx;
     static int el0_total_cnt;
 
-    if (cur_el == 0 && !from_gl && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
-        uint32_t ec = env->cp15.esr_el[1] >> 26;
-        if (ec != 0x15) {
+    if (cur_el == 0 && !from_gl) {
+        if (cs->exception_index == EXCP_SWI) {
+            /* TRUE Userspace SVC (syscall or Mach trap) */
+            uint32_t imm = env->exception.syndrome & 0xffff;
+            int64_t x16_raw = (int64_t)env->xregs[16];
+            int32_t sysno;
+            if (imm == 0x80 || imm == 0) {
+                sysno = (int32_t)(int16_t)x16_raw;
+                if (sysno == 0) sysno = (int32_t)(int16_t)env->xregs[0];
+            } else {
+                sysno = (int32_t)imm;
+            }
+            uint64_t a0 = env->xregs[0];
+            uint64_t a1 = env->xregs[1];
+            uint64_t a2 = env->xregs[2];
+            uint64_t a3 = env->xregs[3];
+            uint64_t upc = env->pc;
+
+            /* Rate-limit noisy polling traps */
+            static int c_mach_msg = 0;
+            static int c_mmap = 0;
+            static int c_exit = 0;
+            static int c_close = 0;
+            static int c_connect = 0;
+            static int c_login = 0;
+            static int c_mprotect = 0;
+            static int c_readlink = 0;
+            bool skip = false;
+            if (sysno == 0 || sysno == -26 || sysno == -27) {
+                if (++c_mach_msg > 15 && (c_mach_msg % 2000 != 0)) skip = true;
+            } else if (sysno == 197) { /* mmap */
+                if (++c_mmap > 20 && (c_mmap % 2000 != 0)) skip = true;
+            } else if (sysno == 1) { /* exit */
+                if (++c_exit > 15 && (c_exit % 1000 != 0)) skip = true;
+            } else if (sysno == 66) { /* close / vfork */
+                if (++c_close > 15 && (c_close % 1000 != 0)) skip = true;
+            } else if (sysno == 98) { /* connect */
+                if (++c_connect > 20 && (c_connect % 500 != 0)) skip = true;
+            } else if (sysno == 50) {
+                if (++c_login > 15 && (c_login % 500 != 0)) skip = true;
+            } else if (sysno == 194 || sysno == 195 || sysno == 196) {
+                if (++c_mprotect > 15 && (c_mprotect % 500 != 0)) skip = true;
+            } else if (sysno == 58) { /* readlink */
+                if (++c_readlink > 20 && (c_readlink % 200 != 0)) skip = true;
+            }
+
+            if (!skip) {
+                char s0[128] = {0};
+                char s1[128] = {0};
+                /* Check if a0 or a1 points to a userspace string */
+                if (a0 >= 0x1000 && a0 < 0x800000000000ULL) {
+                    for (int i = 0; i < 127; i++) {
+                        GetPhysAddrResult r = {};
+                        ARMMMUFaultInfo fi = {};
+                        if (!get_phys_addr(env, a0 + i, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                            !get_phys_addr(env, a0 + i, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
+                            char c = 0;
+                            address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
+                            if (!c || (unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) break;
+                            s0[i] = c;
+                        } else break;
+                    }
+                }
+                if (a1 >= 0x1000 && a1 < 0x800000000000ULL) {
+                    for (int i = 0; i < 127; i++) {
+                        GetPhysAddrResult r = {};
+                        ARMMMUFaultInfo fi = {};
+                        if (!get_phys_addr(env, a1 + i, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                            !get_phys_addr(env, a1 + i, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
+                            char c = 0;
+                            address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
+                            if (!c || (unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) break;
+                            s1[i] = c;
+                        } else break;
+                    }
+                }
+
+                static FILE *svclog = NULL;
+                static bool svclog_init = false;
+                if (!svclog_init) {
+                    svclog_init = true;
+                    svclog = fopen("/home/ard/vrwork/svc.log", "w");
+                    if (!svclog) svclog = fopen("svc.log", "w");
+                }
+                if (svclog) {
+                    fprintf(svclog, "[SVC %5d (x16=0x%" PRIx64 ")] pc=0x%" PRIx64 " a0=0x%" PRIx64 " a1=0x%" PRIx64 " a2=0x%" PRIx64,
+                            sysno, x16_raw, upc, a0, a1, a2);
+                    if (s0[0] && s1[0]) {
+                        fprintf(svclog, " s0=\"%s\" s1=\"%s\"\n", s0, s1);
+                    } else if (s0[0]) {
+                        fprintf(svclog, " str=\"%s\"\n", s0);
+                    } else if (s1[0]) {
+                        fprintf(svclog, " str=\"%s\"\n", s1);
+                    } else {
+                        fprintf(svclog, "\n");
+                    }
+                    fflush(svclog);
+                }
+            }
+        } else if (qemu_loglevel_mask(LOG_GUEST_ERROR)) {
+            uint32_t ec = syn_get_ec(env->exception.syndrome);
             int r_idx = (el0_ring_idx++) & 63;
             el0_ring[r_idx] = (struct el0_fault_rec){
                 .cnt = ++el0_total_cnt,

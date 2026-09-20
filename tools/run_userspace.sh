@@ -5,12 +5,14 @@ W=~/vrwork
 FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
 TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
-rm -f $W/us.uart $W/us.log $W/kprintf.log
-export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c,0xfffffe0008c12c5c"
+rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log
+export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c,0xfffffe0008c12c5c,0xfffffe0007d5788c,0xfffffe0007d57828"
 # 0xfffffe0008f3a91c — rootvp auth (session 35).
 # 0xfffffe0008f6f214 — BSD signal psignal(initproc, SIGKILL) bypass (session 48/53).
 # 0xfffffe0008f7c25c — reap_child_locked psignal_with_reason(initproc, SIGKILL, BAD_MACHO) bypass (session 53).
 # 0xfffffe0008c12c5c — arm_init cbz w8 skips PE_init_platform & pe_serial_init (session 57/58).
+# 0xfffffe0007d5788c — AMFI cbz w0 (adhoc check failure) NOP (session 60).
+# 0xfffffe0007d57828 — AMFI b.ne assertion failed (*cs_flags & initial_cs_flags) NOP (session 60).
 # Session 49: пробовали NOP на 4 panic (evaluate + BSD signal) — "Kernel
 # instruction fetch abort" (unreachable code после noreturn panic).
 # Патч kernelcache через tools/patch_kc.py — iBoot отверг ("Kernelcache
@@ -28,7 +30,10 @@ export VR_RET0="0xfffffe0007eaf750,0xfffffe0007eafb20,0xfffffe0007eb6de8"
 # vnode_check_signature. Функция полностью выполнится (out-params
 # правильные), но result всегда 0 (allow). Session 52 — узкая замена
 # session 43 VR_RET0 который ломал out-params → BAD_MACHO SIGKILL init.
-export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0,0xfffffe000885cc60:0xfffffe000885cc78"
+export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0,0xfffffe000885cc60:0xfffffe000885cc78,0xfffffe0007d577d4:0xfffffe0007d57880"
+# 0xfffffe0007d577d4:0xfffffe0007d57880 — AMFI vnode_check_signature TXM bypass (Session 60).
+# Redirects cbz w24 failure branch directly to success path: loads true cs_flags, sets *cs_flags |= 0x20000000,
+# attaches csblob, and sets w21 = 0 (allow).
 # 0xfffffe000885cc60:0xfffffe000885cc78 — AMFI evaluate.c:0x137b shenanigans! bypass (Session 54).
 # b.ne #0xfffffe000885cfc8 (panic) redirected to str xzr,[sp,#0x18] (success return 0).
 # AMFI vnode_check_signature @0xfffffe0007d56dd4 — прыжок в начало функции;
@@ -43,7 +48,6 @@ export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe00
 # был из-за out-params corruption от полного skip функции.
 export VR_WATCH="0xfffffe0008f77aac,0xfffffe0008ad5a9c,0xfffffe0008be9f70"
 # Session 53: watch func containing "Process 1 exec of %s failed" panic.
-# x0=proc, x1=exec_args, x2=..., lr=caller — узнаем какой path exec-ит init.
 # Session 58: 0xfffffe0008ad5a9c — cnputc direct console interception.
 # Session 58: 0xfffffe0008be9f70 — kprintf buffer output interception.
 export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
@@ -67,6 +71,12 @@ if [ -f "$W/kprintf.log" ]; then
   tail -n 80 "$W/kprintf.log"
 else
   echo "(kprintf.log is empty or not created)"
+fi
+echo "=== svc.log tail ==="
+if [ -f "$W/svc.log" ]; then
+  tail -n 120 "$W/svc.log"
+else
+  echo "(svc.log is empty or not created)"
 fi
 echo "=== last user panics/exits in log ==="
 grep -aE 'udef@x[0-4]=|udef@\*x3\[[0-9]|userspace panic|fsck|launchd|boot task|CS_KILLED|EXIT_REASON' "$W/us.log" | tail -40
