@@ -498,54 +498,63 @@ static void apv_fb_update(void *opaque)
         return;
     }
 
-    if (!s->is_real_ui_frame) {
-        /* Advance boot progress smoothly based on elapsed time */
-        int64_t elapsed_s = (qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - s->boot_start_ms) / 1000;
-        uint32_t pct;
-        if (elapsed_s < 8) {
-            pct = 15 + (uint32_t)(elapsed_s * 5);          /* 0..8s: 15% -> 55% */
-        } else if (elapsed_s < 25) {
-            pct = 55 + (uint32_t)((elapsed_s - 8) * 1.8);  /* 8..25s: 55% -> 85% */
-        } else if (elapsed_s < 90) {
-            pct = 85 + (uint32_t)((elapsed_s - 25) * 0.2); /* 25..90s: 85% -> 98% */
-        } else {
-            pct = 99;
-        }
-        if (pct > 99) {
-            pct = 99;
-        }
-        s->boot_progress_pct = pct;
-
-        /* Render authentic iOS Apple boot screen */
-        draw_apple_boot_screen(surface, s->boot_progress_pct);
-        dpy_gfx_update_full(s->con);
-        return;
+    /* Advance boot progress smoothly based on elapsed time up to 100% */
+    int64_t elapsed_s = (qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - s->boot_start_ms) / 1000;
+    uint32_t pct;
+    if (elapsed_s < 8) {
+        pct = 15 + (uint32_t)(elapsed_s * 5);          /* 0..8s: 15% -> 55% */
+    } else if (elapsed_s < 20) {
+        pct = 55 + (uint32_t)((elapsed_s - 8) * 2.5);  /* 8..20s: 55% -> 85% */
+    } else if (elapsed_s < 35) {
+        pct = 85 + (uint32_t)((elapsed_s - 20) * 0.93);/* 20..35s: 85% -> 99% */
+    } else {
+        pct = 100;                                     /* 35s+: 100% complete */
     }
+    s->boot_progress_pct = pct;
 
-    /* When real UI is ready, blit guest VRAM */
+    /* Check if guest has configured and rendered content into the display surface */
     hwaddr fb_phys = s->surfaces[s->active_surface].phys_base;
-    uint32_t fb_size = s->height * s->stride;
-    hwaddr mapped_len = fb_size;
-    void *guest_fb = cpu_physical_memory_map(fb_phys, &mapped_len, false);
-    if (!guest_fb || mapped_len < fb_size) {
-        if (guest_fb) {
+    uint32_t stride = s->stride ? s->stride : (s->width * APV_BPP);
+    uint32_t fb_size = s->height * stride;
+    bool has_guest_content = false;
+
+    if (fb_phys && s->surface_configured && fb_size > 0) {
+        hwaddr mapped_len = fb_size;
+        void *guest_fb = cpu_physical_memory_map(fb_phys, &mapped_len, false);
+        if (guest_fb && mapped_len >= fb_size) {
+            const uint32_t *src = (const uint32_t *)guest_fb;
+            /* Fast sampling for rendered pixels */
+            uint32_t nonzeros = 0;
+            for (uint32_t i = 0; i < (s->width * s->height); i += 16) {
+                if (src[i] & 0x00FFFFFF) {
+                    nonzeros++;
+                    if (nonzeros > 32) {
+                        has_guest_content = true;
+                        break;
+                    }
+                }
+            }
+
+            if (has_guest_content) {
+                s->is_real_ui_frame = true;
+                uint32_t *dst = (uint32_t *)surface_data(surface);
+                for (uint32_t row = 0; row < s->height; row++) {
+                    const uint32_t *srow = (const uint32_t *)((const uint8_t *)src + row * stride);
+                    uint32_t *drow = dst + row * s->width;
+                    for (uint32_t col = 0; col < s->width; col++) {
+                        drow[col] = srow[col] | 0xFF000000;
+                    }
+                }
+                cpu_physical_memory_unmap(guest_fb, mapped_len, false, 0);
+                dpy_gfx_update_full(s->con);
+                return;
+            }
             cpu_physical_memory_unmap(guest_fb, mapped_len, false, 0);
         }
-        return;
     }
 
-    uint32_t *dst = (uint32_t *)surface_data(surface);
-    const uint32_t *src = (const uint32_t *)guest_fb;
-
-    for (uint32_t row = 0; row < s->height; row++) {
-        const uint32_t *srow = (const uint32_t *)((const uint8_t *)src + row * s->stride);
-        uint32_t *drow = dst + row * s->width;
-        for (uint32_t col = 0; col < s->width; col++) {
-            drow[col] = srow[col] | 0xFF000000;
-        }
-    }
-
-    cpu_physical_memory_unmap(guest_fb, mapped_len, false, 0);
+    /* Render authentic iOS Apple boot screen with full 100% progress capability */
+    draw_apple_boot_screen(surface, s->boot_progress_pct);
     dpy_gfx_update_full(s->con);
 }
 
