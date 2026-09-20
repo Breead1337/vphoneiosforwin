@@ -6,7 +6,7 @@ FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
 TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
 rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log
-export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c,0xfffffe0008c12c5c,0xfffffe0007d5788c,0xfffffe0007d57828,0xfffffe0008ab1540,0xfffffe0008ab15c0"
+export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c,0xfffffe0008c12c5c,0xfffffe0007d5788c,0xfffffe0007d57828,0xfffffe0008ab1540,0xfffffe0008ab15c0,0xfffffe00088cc774,0xfffffe00088cc788"
 # 0xfffffe0008f3a91c — rootvp auth (session 35).
 # 0xfffffe0008f6f214 — BSD signal psignal(initproc, SIGKILL) bypass (session 48/53).
 # 0xfffffe0008f7c25c — reap_child_locked psignal_with_reason(initproc, SIGKILL, BAD_MACHO) bypass (session 53).
@@ -15,6 +15,7 @@ export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c,0xfffffe
 # 0xfffffe0007d57828 — AMFI b.ne assertion failed (*cs_flags & initial_cs_flags) NOP (session 60).
 # 0xfffffe0008ab1540 — TXM CodeSignature wrapper b.ne failure path NOP (session 62).
 # 0xfffffe0008ab15c0 — TXM CodeSignature selector error b.ne panic NOP (session 62).
+# 0xfffffe00088cc774,0xfffffe00088cc788 — APFS handle_get_dev_by_role entitlement bypass (Patch 16).
 # Session 49: пробовали NOP на 4 panic (evaluate + BSD signal) — "Kernel
 # instruction fetch abort" (unreachable code после noreturn panic).
 # Патч kernelcache через tools/patch_kc.py — iBoot отверг ("Kernelcache
@@ -23,16 +24,20 @@ export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c,0xfffffe
 # Session 46 пробовал ещё 2 NOP на shenanigans! panic (0xfffffe000885cfc4/cff0)
 # — вернулись к "SIGKILL of init". Root cause — AMFI evaluate детектит
 # несоответствие CDHash с TC. Session 47 = реальный CDHash пересчёт.
-export VR_MOV0="0xfffffe0008c19a28,0xfffffe0007d5785c,0xfffffe0007d524b0"
+export VR_MOV0="0xfffffe0008c19a28,0xfffffe0007d5785c,0xfffffe0007d524b0,0xfffffe00088ce284,0xfffffe00088b779c"
 # 0xfffffe0008c19a28: PE_init_platform hook (Session 57).
 # 0xfffffe0007d5785c: mov x0,x21 → mov x0,#0 before retab vnode_check_signature (Session 52).
-# 0xfffffe0007d524b0: mov x0,x24 → mov x0,#0 before retab mpo_proc_check_launch_constraints (Session 63).
-export VR_RET0="0xfffffe0007eaf750,0xfffffe0007eafb20,0xfffffe0007eb6de8,0xfffffe0007d53c84"
+# 0xfffffe0007d524b0: mov x0,x24 → mov x0,#0 before retab mpo_proc_check_launch constraints (Session 63).
+# 0xfffffe00088ce284: APFS handle_fsioc_graft validate_payload_and_manifest -> 0 (Patch 15).
+# 0xfffffe00088b779c: APFS mountroot vfs_flags force 0 (RW root mount).
+export VR_RET0="0xfffffe0007eaf750,0xfffffe0007eafb20,0xfffffe0007eb6de8,0xfffffe0007d53c84,0xfffffe00088b8c40"
 # 0xfffffe0007eaf750: AppleSEPBooter::_captureiBICKCV() — SEP hardware check early-return (Session 54).
 # 0xfffffe0007eafb20: AppleSEPBooter::bootSEP() — SEP boot hardware check early-return (Session 54).
 # 0xfffffe0007eb6de8: AppleSEPBooter::checkStatus() — SEP status check panic early-return (Session 54).
 # 0xfffffe0007d53c84: StaticPlatformPolicy checkForLaunchWarningsInDaemon entry (pacibsp) — returns 0 (allow) (Session 62).
-export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0,0xfffffe000885cc60:0xfffffe000885cc78,0xfffffe0007d577d4:0xfffffe0007d57880,0xfffffe0007d57a70:0xfffffe0007d57aac,0xfffffe0007d57c58:0xfffffe0007d57c70,0xfffffe0007d57c78:0xfffffe0007d57880,0xfffffe0007d53cb4:0xfffffe0007d53d44"
+# 0xfffffe00088b8c40: APFS apfs_mount_upgrade_checks entry — returns 0 (allow RW remount) (Patch 14).
+export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0,0xfffffe000885cc60:0xfffffe000885cc78,0xfffffe0007d577d4:0xfffffe0007d57880,0xfffffe0007d57a70:0xfffffe0007d57aac,0xfffffe0007d57c58:0xfffffe0007d57c70,0xfffffe0007d57c78:0xfffffe0007d57880,0xfffffe0007d53cb4:0xfffffe0007d53d44,0xfffffe00088b7e08:0xfffffe00088b8058"
+# 0xfffffe00088b7e08:0xfffffe00088b8058 — APFS _apfs_vfsop_mount kernel_task check bypass (Patch 13).
 # 0xfffffe0007d57a70:0xfffffe0007d57aac — AMFI CT policy (CoreTrust) bypass (Session 62).
 # 0xfffffe0007d57c58:0xfffffe0007d57c70 — Skip StaticPlatformPolicy<2> print in vnode_check_signature (Session 63).
 # 0xfffffe0007d57c78:0xfffffe0007d57880 — Redirect signature rejection directly to success exit (attaches csblob, w21=0) (Session 63).
