@@ -13,15 +13,14 @@ for _ in range(ncmds):
         segs.append((segname, vmaddr, vmsize, fileoff))
     off += cmdsize
 
-# In start_first_cpu:
-# x0 = boot_args
-# In __TEXT_BOOT_EXEC:
-for sname, vm, sz, fo in segs:
-    if sname == '__TEXT_BOOT_EXEC':
-        kc.seek(fo)
-        code = kc.read(sz)
-        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
-        print("Scanning __TEXT_BOOT_EXEC for deviceTreeP loads...")
-        for ins in md.disasm(code, vm):
-            if ins.mnemonic in ['ldr', 'ldp'] and any(f'#{hex(o)}' in ins.op_str for o in range(0x40, 0x70, 8)):
+md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+
+for target in [0xfffffe00090f0ff0, 0xfffffe0008c191e8]:
+    for sname, vm, sz, fo in segs:
+        if vm <= target < vm + sz:
+            kc.seek(fo + (target - vm))
+            code = kc.read(120)
+            print(f"\nDisassembly of {target:#x} in {sname}:")
+            for ins in md.disasm(code, target):
                 print(f"  {ins.address:#x}: {ins.mnemonic:8s} {ins.op_str}")
+            break

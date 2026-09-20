@@ -1594,3 +1594,43 @@ init для fsck**, но следующий exec bad_macho — от другог
    - `tools/disasm_boot_branches.py`: анализ точек входа и веток `start_first_cpu`.
    - `tools/count_elr.py`: гистограмма адресов возврата в userspace.
    - `tools/set_nvram_bootargs.py`: утилита конфигурации NVRAM boot-args.
+
+## Обновление 20.09 (57) — Полная разгадка pe_serial, структуры драйвера PL011 и детальная карта sysent
+
+1. **Точная причина тишины последовательной консоли XNU (PL011 UART):**
+   - Полностью реверсирована функция `pe_serial_init` (`0xfffffe000927cca4`) и её вызовы:
+     1. В `arm_init` (`0xfffffe0008c10d84`) `pe_serial_init` вызывается **до** инициализации DeviceTree (`[0xfffffe000779a0e8] == 0`).
+     2. Из-за этого `pe_serial_init` преждевременно устанавливает `serial_initted = 1` (`[0xfffffe000949c950] = 1`), оставляя список устройств `[0xfffffe000949c948]` равным `NULL`, и возвращает `w0 = 0`.
+     3. Позже в `0xfffffe0008c12c58` проверка `ldr w8, [x19, #0xf58]; cbz w8, #0xfffffe0008c12c94` перепрыгивает вызов `PE_init_platform` (`0xfffffe000927be30`), так как флаг `0xfffffe000948ff58` выставляется только в `cpu_init` (`0xfffffe0009279120`).
+     4. Наконец, в `start_first_cpu` (`0xfffffe00092c4e9c`) вызов `pe_serial_init` возвращает `0`, и инструкция `0xfffffe00092c4ec8: csel x8, x16, x8, eq` выбирает фиктивный пустой обработчик `0xfffffe0008bea2e0` вместо реального `pe_serial_putc` (`0xfffffe000927c848`), записывая его в глобальный указатель `serial_putc` (`[0xfffffe000779a2d8]`).
+     5. Все дальнейшие вызовы ядра `kprintf` -> `kvprintf` -> `cnputc` (`0xfffffe0008ad5a9c`) обращаются к `serial_putc`, который молча отбрасывает символы.
+
+2. **Анатомия и структура драйвера PL011 в ядре XNU:**
+   - Статическая таблица операций драйвера расположена в `__DATA_CONST` по адресу `0xfffffe000779a2e0`:
+     - `+0x00`: `uart_init` (`0xfffffe000927cc80`) — настраивает регистры PL011 (UARTCR = 0x301, UARTLCR_H = 0x70, 8N1 FIFO).
+     - `+0x08`: `uart_tx_ready` (`0xfffffe000927cc68`) — проверяет бит 5 регистра UARTFR (TXFF).
+     - `+0x10`: `uart_putc` (`0xfffffe000927cc58`) — прямая запись в регистр UARTDR (`str w0, [x8]`).
+     - `+0x18`: `uart_rx_ready` (`0xfffffe000927cc40`) — проверяет бит 4 регистра UARTFR (RXFE).
+   - Базовый виртуальный адрес отображения MMIO PL011 (`0x20010000`) сохраняется ядром в `[0xfffffe000949c958]`.
+   - Регистрация драйвера в глобальном списке устройств `[0xfffffe000949c948]` происходит по адресу `0xfffffe000927cf80`.
+
+3. **Детальная карта системных вызовов launchd (PID 1):**
+   - Исправлен парсер `dump_sysent.py` для 24-байтной структуры `struct sysent` XNU (`<ihH`):
+     - `sysent_base = 0xfffffe00077513b0`.
+     - Все указатели `sy_call` подписаны PACIA с дискриминатором `0xbcad`.
+     - Вызовы `openat` (#423, `0xfffffe0008f9d624`), `openat_nocancel` (#424, `0xfffffe0008c744f0`), `guarded_open_np` (#447, `0xfffffe0009013b54`), `kevent64` (#380, `0xfffffe0008f77268`).
+   - Распределение 47,121 вызовов SVC `launchd`:
+     - 14,897 вызовов `mmap` (197 / 0xc5) — отображение dyld shared cache.
+     - 7,888 вызовов `mach_msg_trap` (0x00) — обработка сообщений Mach IPC.
+     - 7,772 вызова `mach_reply_port` / системных портов (0x01).
+     - 3,920 вызовов `kevent64` (66 / 0x42).
+     - 2,880 вызовов `connect` (98 / 0x62).
+     - 2,262 вызова `getpid` (50 / 0x32).
+     - 941 вызов `readlink` (58 / 0x3a).
+     - 492 вызова `memorystatus_control` (101 / 0x65).
+   - PID 1 стабильно активен и находится в основном цикле обработки событий (`kevent64` + `mach_msg_trap`).
+
+4. **План действий для вывода логов и запуска демонов:**
+   - Для мгновенного вывода консоли: хук `VR_WATCH` на `0xfffffe0008ad5a9c` (`cnputc`) с прямой передачей символов в `stderr` / `us.uart`.
+   - Для штатной работы PL011: NOP на `0xfffffe0008c12c5c` (`cbz w8, #0xfffffe0008c12c94`) для сквозного выполнения `PE_init_platform`.
+   - Подача сигналов/событий в kqueue/Mach-порт `launchd` для инициализации служб из `/System/Library/LaunchDaemons`.
