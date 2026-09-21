@@ -22,11 +22,14 @@ export VR_MOV0="0xfffffe0007cf3d6c,0xfffffe00088ce284,0xfffffe00088b779c,0xfffff
 export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50"
 # 0xfffffe00088b8c40: APFS apfs_mount_upgrade_checks entry — returns 0 (allow RW remount) (Patch 14).
 # 0xfffffe0008ee7e50: cs_invalid_page entry — returns 0 (never kill process on invalid page).
-export VR_B="0xfffffe00088b7e08:0xfffffe00088b8058,0xfffffe0007cf3ce4:0xfffffe0007cf3d90,0xfffffe0007cf3d94:0xfffffe0007cf3dac,0xfffffe0008b06710:0xfffffe0008b06a44"
+export VR_B="0xfffffe00088b7e08:0xfffffe00088b8058,0xfffffe0007cf3ce4:0xfffffe0007cf3d90,0xfffffe0007cf3d94:0xfffffe0007cf3dac,0xfffffe0008b06710:0xfffffe0008b06a44,0xfffffe0008ab064c:0xfffffe0008ab05a0"
 # 0xfffffe00088b7e08:0xfffffe00088b8058 — APFS _apfs_vfsop_mount kernel_task check bypass (Patch 13).
 # 0xfffffe0007cf3ce4:0xfffffe0007cf3d90 — AMFI release KC: redirect w24!=0 failure branch directly to success path.
 # 0xfffffe0007cf3d94:0xfffffe0007cf3dac — AMFI release KC: force w9=1 and jump directly to flag setting/csblob attach.
 # 0xfffffe0008b06710:0xfffffe0008b06a44 — vm_fault_enter_prepare skip os_reason_create(3, 2) directly to exit.
+# 0xfffffe0008ab064c:0xfffffe0008ab05a0 — AppleSEPBooter::_captureiBICKCV REQUIRE panic bypass:
+#   `bl panic` at 0x8ab064c redirected to the success epilog (mov x0, x19; ldp...; retab) at 0x8ab05a0.
+#   Function returns its input pointer (x19) instead of panicking on kIOReturnSuccess != result.
 # 0xfffffe0007d57a70:0xfffffe0007d57aac — AMFI CT policy (CoreTrust) bypass (Session 62).
 # 0xfffffe0007d57c58:0xfffffe0007d57c70 — Skip StaticPlatformPolicy<2> print in vnode_check_signature (Session 63).
 # 0xfffffe0007d57c78:0xfffffe0007d57880 — Redirect signature rejection directly to success exit (attaches csblob, w21=0) (Session 63).
