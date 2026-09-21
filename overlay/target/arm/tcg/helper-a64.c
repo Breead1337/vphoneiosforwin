@@ -983,6 +983,34 @@ void HELPER(gexit)(CPUARMState *env)
     int cur_el = arm_current_el(env);
     uint32_t spsr = env->gxf.spsr_gl[cur_el];
 
+    /* vresearch101: SPTM emits panic-gexit (x0=4) when GL0/TXM userspace hits an
+     * unhandled synchronous exception (Data Abort on unmapped user pages while
+     * dyld/launchd is still probing). Peek at the x1 formatstring; if it starts
+     * with "panic_with_register_state" or contains "Unhandled synchronous",
+     * downgrade x0 to a plain gexit-return so XNU-EL1 does not enter panic. */
+    if (env->xregs[0] == 4) {
+        uint64_t p = env->xregs[1];
+        p |= (p >> 55 & 1) ? 0xff00000000000000ULL : 0;
+        if ((p >> 48) == 0xffff) {
+            GetPhysAddrResult res = {};
+            ARMMMUFaultInfo fi = {};
+            char b[64] = {};
+            bool ok = !get_phys_addr(env, p, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &res, &fi);
+            if (!ok) {
+                ok = !get_phys_addr(env, p, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E1, &res, &fi);
+            }
+            if (ok) {
+                address_space_read(env_cpu(env)->as, res.f.phys_addr, MEMTXATTRS_UNSPECIFIED, b, sizeof(b) - 1);
+                if (!memcmp(b, "panic_with_register_state", 25) ||
+                    strstr(b, "Unhandled synchronous")) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "vr: downgrading SPTM panic-gexit (x1=\"%.40s...\") -> plain gexit\n", b);
+                    env->xregs[0] = 0;
+                }
+            }
+        }
+    }
+
     /* vresearch101 debug: SPTM/TXM hand a panic to XNU as GEXIT with x0=4; dump its strings (read in GL regime) */
     if (env->xregs[0] == 4 && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
         qemu_log_mask(LOG_GUEST_ERROR, "gexit-panic x1=0x%" PRIx64 " x2=0x%" PRIx64 " x3=0x%" PRIx64
