@@ -6,38 +6,27 @@ FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
 TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
 rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log
-export VR_NOP="0xfffffe0008f3a91c,0xfffffe0008f6f214,0xfffffe0008f7c25c,0xfffffe0008c12c5c,0xfffffe0007d5788c,0xfffffe0007d57828,0xfffffe0008ab1540,0xfffffe0008ab15c0,0xfffffe00088cc774,0xfffffe00088cc788"
-# 0xfffffe0008f3a91c — rootvp auth (session 35).
-# 0xfffffe0008f6f214 — BSD signal psignal(initproc, SIGKILL) bypass (session 48/53).
-# 0xfffffe0008f7c25c — reap_child_locked psignal_with_reason(initproc, SIGKILL, BAD_MACHO) bypass (session 53).
-# 0xfffffe0008c12c5c — arm_init cbz w8 skips PE_init_platform & pe_serial_init (session 57/58).
-# 0xfffffe0007d5788c — AMFI cbz w0 (adhoc check failure) NOP (session 60).
-# 0xfffffe0007d57828 — AMFI b.ne assertion failed (*cs_flags & initial_cs_flags) NOP (session 60).
-# 0xfffffe0008ab1540 — TXM CodeSignature wrapper b.ne failure path NOP (session 62).
-# 0xfffffe0008ab15c0 — TXM CodeSignature selector error b.ne panic NOP (session 62).
+export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe0007cf3d38,0xfffffe0007cf3d9c,0xfffffe0008f1781c"
+# 0xfffffe0008ed691c — rootvp auth (release KC: cbnz w0, #0x8ed6b78 panic "rootvp not authenticated").
 # 0xfffffe00088cc774,0xfffffe00088cc788 — APFS handle_get_dev_by_role entitlement bypass (Patch 16).
-# Session 49: пробовали NOP на 4 panic (evaluate + BSD signal) — "Kernel
-# instruction fetch abort" (unreachable code после noreturn panic).
-# Патч kernelcache через tools/patch_kc.py — iBoot отверг ("Kernelcache
-# image not valid" через inline hash check не покрытый ADRP-xref).
-# Runtime-хуки исчерпаны, дальше нужна пересборка rootfs (см. NOTES 49).
-# Session 46 пробовал ещё 2 NOP на shenanigans! panic (0xfffffe000885cfc4/cff0)
-# — вернулись к "SIGKILL of init". Root cause — AMFI evaluate детектит
-# несоответствие CDHash с TC. Session 47 = реальный CDHash пересчёт.
-export VR_MOV0="0xfffffe0008c19a28,0xfffffe0007d5785c,0xfffffe0007d524b0,0xfffffe00088ce284,0xfffffe00088b779c"
-# 0xfffffe0008c19a28: PE_init_platform hook (Session 57).
-# 0xfffffe0007d5785c: mov x0,x21 → mov x0,#0 before retab vnode_check_signature (Session 52).
-# 0xfffffe0007d524b0: mov x0,x24 → mov x0,#0 before retab mpo_proc_check_launch constraints (Session 63).
+# 0xfffffe0007cf3d38 — AMFI release KC b.ne assertion failed (*cs_flags & initial_cs_flags) NOP.
+# 0xfffffe0007cf3d9c — AMFI release KC cbz w0 adhoc rejection check NOP.
+# 0xfffffe0008f1781c — bl panic for "exit reason namespace %d subcode 0x%llx" NOP.
+#   Prevents kernel panic when critical boot task (mount[3]) exits with error.
+#   After NOP, falls through to 0xfffffe0008f17820 which loops back to process next task.
+export VR_MOV0="0xfffffe0007cf3d6c,0xfffffe00088ce284,0xfffffe00088b779c,0xfffffe0008b06314"
+# 0xfffffe0007cf3d6c: mov x0,x21 → mov x0,#0 before retab vnode_check_signature in release KC.
 # 0xfffffe00088ce284: APFS handle_fsioc_graft validate_payload_and_manifest -> 0 (Patch 15).
 # 0xfffffe00088b779c: APFS mountroot vfs_flags force 0 (RW root mount).
-export VR_RET0="0xfffffe0007eaf750,0xfffffe0007eafb20,0xfffffe0007eb6de8,0xfffffe0007d53c84,0xfffffe00088b8c40"
-# 0xfffffe0007eaf750: AppleSEPBooter::_captureiBICKCV() — SEP hardware check early-return (Session 54).
-# 0xfffffe0007eafb20: AppleSEPBooter::bootSEP() — SEP boot hardware check early-return (Session 54).
-# 0xfffffe0007eb6de8: AppleSEPBooter::checkStatus() — SEP status check panic early-return (Session 54).
-# 0xfffffe0007d53c84: StaticPlatformPolicy checkForLaunchWarningsInDaemon entry (pacibsp) — returns 0 (allow) (Session 62).
+# 0xfffffe0008b06314: vm_fault_enter_prepare bl cs_invalid_page -> mov x0, #0 (allow page validation).
+export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50"
 # 0xfffffe00088b8c40: APFS apfs_mount_upgrade_checks entry — returns 0 (allow RW remount) (Patch 14).
-export VR_B="0xfffffe0008f7b2fc:0xfffffe0008f7adb0,0xfffffe0008f7ad74:0xfffffe0008f7adb0,0xfffffe000885cc60:0xfffffe000885cc78,0xfffffe0007d577d4:0xfffffe0007d57880,0xfffffe0007d57a70:0xfffffe0007d57aac,0xfffffe0007d57c58:0xfffffe0007d57c70,0xfffffe0007d57c78:0xfffffe0007d57880,0xfffffe0007d53cb4:0xfffffe0007d53d44,0xfffffe00088b7e08:0xfffffe00088b8058"
+# 0xfffffe0008ee7e50: cs_invalid_page entry — returns 0 (never kill process on invalid page).
+export VR_B="0xfffffe00088b7e08:0xfffffe00088b8058,0xfffffe0007cf3ce4:0xfffffe0007cf3d90,0xfffffe0007cf3d94:0xfffffe0007cf3dac,0xfffffe0008b06710:0xfffffe0008b06a44"
 # 0xfffffe00088b7e08:0xfffffe00088b8058 — APFS _apfs_vfsop_mount kernel_task check bypass (Patch 13).
+# 0xfffffe0007cf3ce4:0xfffffe0007cf3d90 — AMFI release KC: redirect w24!=0 failure branch directly to success path.
+# 0xfffffe0007cf3d94:0xfffffe0007cf3dac — AMFI release KC: force w9=1 and jump directly to flag setting/csblob attach.
+# 0xfffffe0008b06710:0xfffffe0008b06a44 — vm_fault_enter_prepare skip os_reason_create(3, 2) directly to exit.
 # 0xfffffe0007d57a70:0xfffffe0007d57aac — AMFI CT policy (CoreTrust) bypass (Session 62).
 # 0xfffffe0007d57c58:0xfffffe0007d57c70 — Skip StaticPlatformPolicy<2> print in vnode_check_signature (Session 63).
 # 0xfffffe0007d57c78:0xfffffe0007d57880 — Redirect signature rejection directly to success exit (attaches csblob, w21=0) (Session 63).
