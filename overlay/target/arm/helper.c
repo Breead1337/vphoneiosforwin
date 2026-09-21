@@ -8938,6 +8938,30 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
         }
     }
 
+    /* vresearch101 SEP-panic bypass:
+     *  AppleSEPBooter::_captureiBICKCV emits a REQUIRE(kIOReturnSuccess == result)
+     *  panic (XNU DebuggerTrap 0xe7ffdeff) at static VA 0xfffffe0008ab064c. The
+     *  translate-a64 VR_B hook can't help because the instruction lives inside a
+     *  TB that was already translated before VBAR was set (or was patched later
+     *  by SPTM/prelinker). At runtime we simply redirect PC to the function's
+     *  success epilog (mov x0, x19; ldp x29,x30; retab @ 0xfffffe0008ab05a0),
+     *  before the exception is delivered. See run_userspace.sh (VR_B entry). */
+    if (cs->exception_index == EXCP_UDEF && cur_el == 1) {
+        uint64_t vbar = env->cp15.vbar_el[1];
+        if (vbar >= 0xfffffe0000000000ULL) {
+            uint64_t slide = vbar - 0xfffffe0008a5f000ULL;
+            uint64_t static_pc = env->pc - slide;
+            if (static_pc == 0xfffffe0008ab064cULL) {
+                env->pc = 0xfffffe0008ab05a0ULL + slide;
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "vr: SEP _captureiBICKCV panic bypassed, PC=0x%" PRIx64
+                              " -> success epilog @0x%" PRIx64 "\n",
+                              env->pc - slide + 0x0AC, env->pc);
+                return;
+            }
+        }
+    }
+
     /* vresearch101 debug: first-time context for undefined-instruction traps (Apple op vs bad jump) */
     if (cs->exception_index == EXCP_UDEF && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
         static int once;
