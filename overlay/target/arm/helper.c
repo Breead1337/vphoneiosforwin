@@ -8952,11 +8952,20 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
             uint64_t slide = vbar - 0xfffffe0008a5f000ULL;
             uint64_t static_pc = env->pc - slide;
             if (static_pc == 0xfffffe0008ab064cULL) {
-                env->pc = 0xfffffe0008ab05a0ULL + slide;
+                /* Manual "retab": drop the sub sp,#0x60 prologue, set x0=x19
+                 * (success return), strip PAC from LR and jump to caller. The
+                 * old redirect to the retab epilog @0x8ab05a0 crashed the guest
+                 * later (KDA on 0x8ab05e4 with FAR=0xe00) because the panic block
+                 * had corrupted the frame that retab reads back. */
+                uint64_t lr = env->xregs[30];
+                lr = (lr & 0x0000ffffffffffffULL) | 0xffff000000000000ULL;
+                env->xregs[0] = env->xregs[19];
+                env->xregs[31] += 0x60;
+                env->pc = lr;
                 qemu_log_mask(LOG_GUEST_ERROR,
-                              "vr: SEP _captureiBICKCV panic bypassed, PC=0x%" PRIx64
-                              " -> success epilog @0x%" PRIx64 "\n",
-                              env->pc - slide + 0x0AC, env->pc);
+                              "vr: SEP _captureiBICKCV panic bypassed -> caller LR 0x%" PRIx64
+                              " (static 0x%" PRIx64 "), x0=x19=0x%" PRIx64 "\n",
+                              lr, lr - slide, env->xregs[0]);
                 return;
             }
         }
