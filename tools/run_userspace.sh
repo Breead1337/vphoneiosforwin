@@ -6,7 +6,7 @@ FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
 TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
 rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log
-export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe0007cf3d38,0xfffffe0007cf3d9c,0xfffffe0008f1781c"
+export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe0007cf3d38,0xfffffe0007cf3d9c,0xfffffe0008f1781c,0xfffffe0008aaab18,0xfffffe0008aaab34"
 # 0xfffffe0008ed691c — rootvp auth (release KC: cbnz w0, #0x8ed6b78 panic "rootvp not authenticated").
 # 0xfffffe00088cc774,0xfffffe00088cc788 — APFS handle_get_dev_by_role entitlement bypass (Patch 16).
 # 0xfffffe0007cf3d38 — AMFI release KC b.ne assertion failed (*cs_flags & initial_cs_flags) NOP.
@@ -14,6 +14,10 @@ export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe
 # 0xfffffe0008f1781c — bl panic for "exit reason namespace %d subcode 0x%llx" NOP.
 #   Prevents kernel panic when critical boot task (mount[3]) exits with error.
 #   After NOP, falls through to 0xfffffe0008f17820 which loops back to process next task.
+# 0xfffffe0008aaab18 — wfe in AppleSEPBooter SEP wait spin loop (blocks forever without real SEP).
+#   NOPing wfe makes execution fall through to the tbz+loop check.
+# 0xfffffe0008aaab34 — tbz w8,#4,#0xfffffe0008aaa988 (loop-back branch in SEP wait loop).
+#   NOPing this tbz makes execution skip the back-branch and continue forward to cleanup/exit.
 export VR_MOV0="0xfffffe0007cf3d6c,0xfffffe00088ce284,0xfffffe00088b779c,0xfffffe0008b06314"
 # 0xfffffe0007cf3d6c: mov x0,x21 → mov x0,#0 before retab vnode_check_signature in release KC.
 # 0xfffffe00088ce284: APFS handle_fsioc_graft validate_payload_and_manifest -> 0 (Patch 15).
