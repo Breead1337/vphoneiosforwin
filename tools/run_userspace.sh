@@ -19,9 +19,11 @@ export VR_MOV0="0xfffffe0007cf3d6c,0xfffffe00088ce284,0xfffffe00088b779c,0xfffff
 # 0xfffffe00088ce284: APFS handle_fsioc_graft validate_payload_and_manifest -> 0 (Patch 15).
 # 0xfffffe00088b779c: APFS mountroot vfs_flags force 0 (RW root mount).
 # 0xfffffe0008b06314: vm_fault_enter_prepare bl cs_invalid_page -> mov x0, #0 (allow page validation).
-export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50"
+export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50,0xfffffe0008ab04d4"
 # 0xfffffe00088b8c40: APFS apfs_mount_upgrade_checks entry — returns 0 (allow RW remount) (Patch 14).
 # 0xfffffe0008ee7e50: cs_invalid_page entry — returns 0 (never kill process on invalid page).
+# 0xfffffe0008ab04d4: AppleSEPBooter::_captureiBICKCV entry — returns 0 (no SEP hardware, skip KCV capture).
+#   Function has multiple REQUIRE panics (at 0x8ab05dc, 0x8ab0610, 0x8ab064c); VR_RET0 on prologue skips all.
 export VR_B="0xfffffe00088b7e08:0xfffffe00088b8058,0xfffffe0007cf3ce4:0xfffffe0007cf3d90,0xfffffe0007cf3d94:0xfffffe0007cf3dac,0xfffffe0008b06710:0xfffffe0008b06a44,0xfffffe0008ab064c:0xfffffe0008ab05a0,0xfffffe0009271100:0xfffffe00092711e4"
 # 0xfffffe00088b7e08:0xfffffe00088b8058 — APFS _apfs_vfsop_mount kernel_task check bypass (Patch 13).
 # 0xfffffe0007cf3ce4:0xfffffe0007cf3d90 — AMFI release KC: redirect w24!=0 failure branch directly to success path.
