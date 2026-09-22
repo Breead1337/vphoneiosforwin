@@ -515,6 +515,59 @@ static void apv_fb_update(void *opaque)
     /* Render authentic iOS Apple boot screen with full 100% progress */
     draw_apple_boot_screen(surface, s->boot_progress_pct);
     dpy_gfx_update_full(s->con);
+
+    /* One-shot: after boot settles, scan guest RAM for the XNU in-memory log
+     * buffer (kernel printf/os_log ring). There is no serial console for XNU on
+     * this machine, so the entire kernel log lives only in RAM. Find the
+     * "Darwin Kernel Version" banner XNU prints unconditionally very early, then
+     * dump a window around it to klog.txt. RAM = [0x70000000, 0x170000000). */
+    static bool klog_done = false;
+    if (!klog_done && elapsed_s > 30) {
+        klog_done = true;
+        const hwaddr RAM_BASE = 0x70000000ULL, RAM_END = 0x170000000ULL;
+        const size_t CHUNK = 1 << 20; /* 1 MiB */
+        /* XNU legacy printf ring: struct msgbuf { int msg_magic=0x63061;
+         * int msg_size; int msg_bufx (write idx); int msg_bufr; char msg_bufc[]; }.
+         * The plain-text log follows the 16-byte header inline. */
+        const uint32_t MSG_MAGIC = 0x00063061;
+        const size_t CH = CHUNK, NLEN = 4;
+        uint8_t *buf = g_malloc(CH + NLEN);
+        FILE *kf = fopen("/home/ard/vrwork/klog.txt", "w");
+        if (!kf) kf = fopen("klog.txt", "w");
+        int hits = 0;
+        for (hwaddr base = RAM_BASE; base < RAM_END && hits < 8; base += CH) {
+            size_t n = (base + CH <= RAM_END) ? CH : (RAM_END - base);
+            cpu_physical_memory_read(base, buf, n + (base + CH <= RAM_END ? NLEN : 0));
+            for (size_t i = 0; i + 16 < n; i += 4) {
+                uint32_t magic = ldl_le_p(buf + i);
+                if (magic != MSG_MAGIC) continue;
+                uint32_t msz = ldl_le_p(buf + i + 4);
+                if (msz < 0x1000 || msz > 0x400000) continue; /* sane ring size */
+                hwaddr hit = base + i;
+                if (kf) {
+                    uint32_t bufx = ldl_le_p(buf + i + 8);
+                    fprintf(kf, "\n===== msgbuf @guest_phys 0x%" PRIx64 " size=0x%x bufx=0x%x =====\n",
+                            (uint64_t)hit, msz, bufx);
+                    uint32_t dsz = msz > 0x40000 ? 0x40000 : msz;
+                    uint8_t *dbuf = g_malloc(dsz);
+                    cpu_physical_memory_read(hit + 16, dbuf, dsz);
+                    for (size_t j = 0; j < dsz; j++) {
+                        char c = dbuf[j];
+                        if (c == '\n' || (c >= 0x20 && c < 0x7f)) fputc(c, kf);
+                    }
+                    g_free(dbuf);
+                    fflush(kf);
+                }
+                hits++;
+            }
+        }
+        g_free(buf);
+        if (kf) {
+            fprintf(kf, "\n===== scan done, %d hit(s) =====\n", hits);
+            fclose(kf);
+        }
+        qemu_log_mask(LOG_GUEST_ERROR, "vr-apv-fb: kernel msgbuf scan done, %d hit(s) -> klog.txt\n", hits);
+    }
 }
 
 static void apv_fb_timer_tick(void *opaque)
