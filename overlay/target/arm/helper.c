@@ -8658,6 +8658,36 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
             uint64_t a3 = env->xregs[3];
             uint64_t upc = env->pc;
 
+            /* vresearch101: one-shot ground-truth dump of dyld's startup wait
+             * loop (0x70082300..0x70082420). Read the mach port dyld receives on
+             * (guest-VA 0x700b9dd8) and the two TLS slots it polls. Tells us
+             * whether the port is NULL/bad (busy-spin) or valid (real event
+             * loop), and whether dyld ever leaves this loop. Read-only. */
+            if (!from_gl && upc >= 0x70082300 && upc <= 0x70082420) {
+                static long wl = 0;
+                static FILE *wlog = NULL;
+                static bool wlog_init = false;
+                if (!wlog_init) {
+                    wlog_init = true;
+                    wlog = fopen("/home/ard/vrwork/dyldwait.log", "w");
+                    if (!wlog) wlog = fopen("dyldwait.log", "w");
+                }
+                if (wlog && (wl < 20 || wl % 3000 == 0)) {
+                    uint64_t tls = env->cp15.tpidrro_el[0];
+                    uint32_t port = 0, t10 = 0, t48lo = 0;
+                    #define RD32(va, dst) do { GetPhysAddrResult r = {}; ARMMMUFaultInfo fi = {}; \
+                        if (!get_phys_addr(env, (va), MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi)) \
+                            address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &(dst), 4); } while (0)
+                    RD32(0x700b9dd8ULL, port);
+                    if (tls) { RD32(tls + 0x10, t10); RD32(tls + 0x48, t48lo); }
+                    fprintf(wlog, "[dyldwait #%ld] pc=0x%" PRIx64 " port@b9dd8=0x%x tls=0x%" PRIx64 " tls+0x10=0x%x tls+0x48=0x%x x0=0x%" PRIx64 " x1=0x%" PRIx64 " lr=0x%" PRIx64 "\n",
+                            wl, upc, port, tls, t10, t48lo, a0, a1, env->xregs[30]);
+                    fflush(wlog);
+                    #undef RD32
+                }
+                wl++;
+            }
+
             /* vresearch101: class-agnostic spawn/exec tracer. The class decode
              * above is unreliable for this boot (real launchd spawns show up as
              * "FW"), so key off the raw syscall number and log the path arg to a
