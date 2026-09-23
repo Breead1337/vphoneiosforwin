@@ -17,7 +17,15 @@ def b(src, dst):
 
 # LLB (iBoot-13822.100.791.502.1) patches: va -> (orig insn, new insn)
 # rootfs/panic sites found with vphone-cli research/iboot_patches.md anchors (their 26.3 VAs differ from 26.4)
+MOV_X0_0 = 0xD2800000     # mov x0, #0 (64-bit return value)
+
 LLB_PATCHES = {
+    # Patch 2 (image4_validate_property_callback -> always success): force the
+    # image4 property callback to return 0, bypassing signature/property checks
+    # for ALL image4 objects incl. kernelcache. vphone-cli research/iboot_patches.md
+    # patch 2; VAs re-anchored for 26.4 by the (b.ne ; mov x0,x22 ; ldp x29,x30) pattern.
+    0x7007575C: (0x54000881, NOP),        # 2a image4 cb: b.ne #0x7007586c -> NOP
+    0x70075760: (0xAA1603E0, MOV_X0_0),   # 2b image4 cb: mov x0,x22 -> mov x0,#0
     # image4 loader: IM4M missing -> tbz to 0x40040007 error; jump to payload extraction instead (same as AVPBooter 0x101640)
     0x70074348: (0x36000BC8, b(0x70074348, 0x70074770)),  # tbz w8,#0,0x700744c0 -> b payload extraction
     0x700A2A1C: (0x34000100, b(0x700A2A1C, 0x700A2A3C)),  # 4a rootfs: cbz w0 -> b (err 0x3b7)
@@ -39,12 +47,15 @@ IBOOT_PATCHES = {
     0x70079e68 - 0x8: (0x9400500f, MOV_W0_0),  # bl @ file 0xde60
 }
 
+# iBoot-proper image4 callback bypass (same patch 2 as LLB, VAs in iBoot payload)
+IBOOT_IMG4_PATCHES = {
+    0x70075AFC: (0x540008E1, NOP),        # image4 cb: b.ne -> NOP
+    0x70075B00: (0xAA1603E0, MOV_X0_0),   # image4 cb: mov x0,x22 -> mov x0,#0
+}
+
 IMAGES = [  # order matters: AVPBooter takes the first one (illb); bytes or path
     lambda: patched_im4p(RAW + "LLB.vresearch101.RELEASE.bin", b"illb", LLB_BASE, LLB_PATCHES),
     FW + "all_flash/iBoot.vresearch101.RESEARCH_RELEASE.im4p",
-    # session 49 iBoot patches отключены — на нашей сборке ошибка
-    # "Kernelcache image not valid" срабатывает через другой код.
-    # См. IBOOT_PATCHES выше как reference для будущего.
 ]
 
 
