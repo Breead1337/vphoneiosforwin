@@ -8663,6 +8663,30 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
              * regime) + x16 + lr. Resolves whether env->pc is the real svc site
              * and whether the running dyld matches _work/dyld. De-dup via an
              * open-addressing pc set so the log stays small. Read-only. */
+            /* One-shot: once we are looping at the poll (EL0 pc 0x70082xxx),
+             * dump the loader's live code range 0x700c0000..0x700e0000 via the
+             * EL0 stage-1 regime so it can be disassembled directly (no file). */
+            if (!from_gl && upc >= 0x70082000 && upc <= 0x70082800) {
+                static bool code_dumped = false;
+                if (!code_dumped) {
+                    code_dumped = true;
+                    FILE *cf = fopen("/home/ard/vrwork/loadercode.bin", "wb");
+                    if (!cf) cf = fopen("loadercode.bin", "wb");
+                    if (cf) {
+                        for (uint64_t va = 0x700c0000ULL; va < 0x700e0000ULL; va += 4) {
+                            uint32_t w = 0;
+                            GetPhysAddrResult r = {};
+                            ARMMMUFaultInfo fi = {};
+                            if (!get_phys_addr(env, va, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi))
+                                address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &w, 4);
+                            fwrite(&w, 4, 1, cf);
+                        }
+                        fclose(cf);
+                        qemu_log_mask(LOG_GUEST_ERROR, "vr: dumped loader code 0x700c0000..0x700e0000 -> loadercode.bin\n");
+                    }
+                }
+            }
+
             if (!from_gl) {
                 static uint64_t seen[8192];
                 static int seen_n = 0;
