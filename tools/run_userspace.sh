@@ -5,7 +5,7 @@ W=~/vrwork
 FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
 TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
-rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log
+rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log $W/ibootwatch.log
 export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe0007cf3d38,0xfffffe0007cf3d9c,0xfffffe0008f1781c,0xfffffe0008aaab18,0xfffffe0008aaab34,0xfffffe0008aafd1c"
 # 0xfffffe0008ed691c — rootvp auth (release KC: cbnz w0, #0x8ed6b78 panic "rootvp not authenticated").
 # 0xfffffe00088cc774,0xfffffe00088cc788 — APFS handle_get_dev_by_role entitlement bypass (Patch 16).
@@ -24,7 +24,13 @@ export VR_MOV0="0xfffffe0007cf3d6c,0xfffffe00088ce284,0xfffffe00088b779c,0xfffff
 # 0xfffffe00088ce284: APFS handle_fsioc_graft validate_payload_and_manifest -> 0 (Patch 15).
 # 0xfffffe00088b779c: APFS mountroot vfs_flags force 0 (RW root mount).
 # 0xfffffe0008b06314: vm_fault_enter_prepare bl cs_invalid_page -> mov x0, #0 (allow page validation).
-export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50,0xfffffe0008ab04d4,0xfffffe0008aaa8f0"
+export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50,0xfffffe0008ab04d4,0xfffffe0008aaa8f0,0xfffffe0008914100,0xfffffe000888d724"
+# NB: running kernel = kernelcache.research.vresearch101 (NOT release.raw.bin); addresses below
+# derived from tools/find_roothash_hooks.py against the research KC.
+# 0xfffffe0008914100: is_root_hash_authentication_required(_ios) entry -> 0 (auth NOT required).
+#   Our rootfs seal is broken by file-copy; XNU panics validating the root hash. Returning
+#   "not required" skips validation. (Wall B / recipe root-hash auth bypass.)
+# 0xfffffe000888d724: authapfs_seal_is_broken entry -> 0 (seal NOT broken). Recipe patch #2.
 # 0xfffffe00088b8c40: APFS apfs_mount_upgrade_checks entry — returns 0 (allow RW remount) (Patch 14).
 # 0xfffffe0008ee7e50: cs_invalid_page entry — returns 0 (never kill process on invalid page).
 # 0xfffffe0008ab04d4: AppleSEPBooter::_captureiBICKCV entry — returns 0 (no SEP hardware, skip KCV capture).
@@ -72,6 +78,8 @@ export VR_WATCH="0xfffffe0008f77aac,0xfffffe0008ad5a9c,0xfffffe0008be9f70,0xffff
 # Session 61: 0xfffffe0008f99624 (openat), 0xfffffe0008c704f0 (openat_nocancel)
 # Session 61: 0xfffffe0008f6e7e0 (posix_spawn #244), 0xfffffe0008fd86f8 (posix_spawn #544)
 export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
+# Append ad-hoc watches (e.g. iBoot EL0 VAs) without disturbing the kernel hook set.
+[ -n "$VR_WATCH_EXTRA" ] && export VR_WATCH="$VR_WATCH,$VR_WATCH_EXTRA"
 set +e
 
 timeout ${T:-360} "$Q" -M vresearch101 -smp 1 -m 4G \

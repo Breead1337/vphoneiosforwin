@@ -807,6 +807,30 @@ illegal_return:
  * Также пытается прочитать строку по x0/x1 (обычно filename или proc_comm) — session 53. */
 void HELPER(vr_watch)(CPUARMState *env, uint64_t pc)
 {
+    /* iBoot runs at EL0 with fixed low PCs BEFORE XNU sets VBAR. The slide math
+     * below is garbage there, so log the raw pc + regs to a dedicated file,
+     * deduped (first hit only), to tell which iBoot phase is reached
+     * (poll-loop / KC-layout / handoff). */
+    if (arm_current_el(env) == 0 && pc >= 0x70000000ULL && pc < 0x80000000ULL) {
+        static FILE *ib = NULL; static bool ib_open = false;
+        static uint64_t seen[64]; static int nseen = 0;
+        if (!ib_open) { ib_open = true;
+            ib = fopen("/home/ard/vrwork/ibootwatch.log", "a");
+            if (!ib) ib = fopen("ibootwatch.log", "a"); }
+        bool first = true;
+        for (int i = 0; i < nseen; i++) if (seen[i] == pc) { first = false; break; }
+        if (first && nseen < 64) seen[nseen++] = pc;
+        if (ib && first) {
+            fprintf(ib, "IBOOT-WATCH pc=0x%llx x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx "
+                    "x19=0x%llx x20=0x%llx lr=0x%llx\n",
+                    (unsigned long long)pc, (unsigned long long)env->xregs[0],
+                    (unsigned long long)env->xregs[1], (unsigned long long)env->xregs[2],
+                    (unsigned long long)env->xregs[3], (unsigned long long)env->xregs[19],
+                    (unsigned long long)env->xregs[20], (unsigned long long)env->xregs[30]);
+            fflush(ib);
+        }
+        return;
+    }
     uint64_t slide = env->cp15.vbar_el[1] - 0xfffffe0008a5f000ULL;
 
     /* Session 58: cnputc (0xfffffe0008ad5a9c) - direct XNU kernel & userspace console output stream.

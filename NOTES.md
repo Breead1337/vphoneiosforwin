@@ -1866,3 +1866,34 @@ init для fsck**, но следующий exec bad_macho — от другог
      - **Патч 15 (`handle_fsioc_graft`):** Заглушка валидации манифеста криптекса `0xfffffe00088ce284` в `VR_MOV0` — возврат 0 (успех).
      - **Патч 16 (`handle_get_dev_by_role`):** NOP на ветвления отказа в правах `0xfffffe00088cc774,0xfffffe00088cc788` в `VR_NOP`.
    - Новые хуки скомпилированы в бинарник QEMU и запущены. Эмуляция работает стабильно, без сбоев.
+
+## Обновление 21–23.09 (67–69) — image4-патч iBoot + ошибочный «реврейм в iBoot»
+
+Кратко (детали — в auto-memory `vphone-2026-09-22-progress`, `vphone-stuck-in-iboot`):
+- SEP-обходы (`_captureiBICKCV`), SPTM gexit-downgrade, kcformat «Invalid KC Kind».
+- **Патч image4-callback в `mkaux.py`** (LLB `0x7007575c`+`0x70075760`, iBoot `0x70075afc`+`0x70075b00` → NOP + `mov x0,#0`): убрал цикл верификации образов iBoot (`490dd6a1…` в us.uart). Результат — `aux.patched2.img` (LLB+iBoot).
+- **⚠️ ОШИБКА сессий 68–69:** заключили «гость застрял в iBoot, в ядро не прыгает» — по МОЛЧАЩЕМУ `us.uart` (у XNU нет UART-консоли) БЕЗ проверки `kprintf.log`. Весь EL0-анализ (poll-цикл `/boot/active`, «cL4/exclave-стена») был про раннюю фазу iBoot ДО handoff. **Это опровергнуто сессией 70.**
+
+## Обновление 23–24.09 (70) — ПРОРЫВ: XNU грузится до userspace, launchd (PID 1) РАБОТАЕТ; пробита стена root-hash
+
+**Главная корректировка:** с `aux.patched2.img` **iBoot ДЕЛАЕТ handoff, XNU грузится полностью.** Доказано `kprintf.log` (хук cnputc `0xfffffe0008ad5a9c` пишет живую консоль ядра): Image4 ✓, AMFI (research, «Booted in a VM», ComputeModule14,2) ✓, SEP KeyStore/Manager ✓ (TXM-SEP secure channel), APFS ✓, PCI ✓, **root-mount** (`Got boot device = VirtIO Block… disk0s1`, `apfs_vfsop_mountroot: mountroot called!`, `mount-complete volume System`).
+
+**Диагностика (инструменты):**
+- Добавлен зонд `ibootwatch.log` в `helper-a64.c` (HELPER(vr_watch)): для EL0-iBoot-диапазона [0x70000000,0x80000000) пишет raw pc+регистры с дедупом. Подтвердил: 0x70084398 (фаза загрузки образов, x19=хэш образа) достигается ДО handoff.
+- В `run_userspace.sh` добавлен `VR_WATCH_EXTRA` (аппенд ad-hoc watch без слома kernel-хуков).
+- **Найдена ключевая ошибка адресации:** работающее ядро = **`kernelcache.research.vresearch101`** (в preboot-store), НЕ `kernelcache.release.raw.bin` (я сперва искал функции в release → хук не матчился). Проверка: cnputc `0xfffffe0008ad5a9c` = `pacibsp`+пролог `mov x19,x0` (x0=символ) ТОЛЬКО в research KC; в release там мусор.
+- Тул `tools/find_roothash_hooks.py`: авто-парс LC_SEGMENT_64, ручной ADRP+ADD-скан (capstone глохнет на PAC), находит прологи функций по __func__-строкам. Флэт-мап KC: `vmaddr = 0xfffffe0007004000 + fileoff`.
+
+**СТЕНА B (APFS root-hash / seal) — ПРОБИТА:** rootfs-печать порвана копированием файлов → XNU требовал аутентификацию root-хэша и паниковал (паника уходила в SPTM-gexit, потому текстового `panic:` в kprintf нет — только `Corefile is not yet initialized` + `Error!! Current Magic 0x0, expected 0x46554e4b`).
+- Хуки (research KC), добавлены в `VR_RET0`:
+  - `0xfffffe0008914100` = `is_root_hash_authentication_required(_ios)` → 0 (auth НЕ требуется). Вызывающие делают `cbz w0,<skip>` — уводит на skip-путь.
+  - `0xfffffe000888d724` = `authapfs_seal_is_broken` → 0 (печать НЕ сломана).
+- Результат: строка «root hash authentication is required» ИСЧЕЗЛА, kprintf 202→265 строк.
+
+**Достигнуто (userspace!):** libignition (Darwin Ignition 1.0.0, program=launchd, target=vresearch101ap) отработал стадии → **launchd (PID 1) ЗАПУСТИЛСЯ**: «hello, launchd UUID …», Darwin Bootstrapper 7.0.0, «entering ondemand mode», гонит boot-таски: exclaves-boot, detect-installed-roots, select-boot-mode, commit-boot-mode, rem-enable-fuse («Calling into AMFI to enable REM»), restore-datapartition (optional, отсутствует), **mount-phase-2**.
+
+**НОВАЯ СТЕНА (следующая цель):** на `mount-phase-2` → **`dyld[1]: out of range bind ordinal 8493180 (max 0)`** → паника. dyld не может слинковать dylib для этой boot-таски («max 0» = у образа 0 доступных bind-целей, dyld читает мусор как bind-опкоды — вероятно dyld_shared_cache не смаплен ИЛИ page-validation/подпись даёт нулевые страницы __LINKEDIT). Разбирать: какой образ грузит mount-phase-2, почему bind-стрим пустой.
+
+**Прогресс одной строкой:** iBoot handoff → XNU (SEP/APFS/root-mount) → [root-hash ✓] → libignition → **launchd PID 1 boot-tasks** → стоп на mount-phase-2 dyld-bind. Т.е. от «iBoot-loop» (ошибочно) до живого launchd в userspace.
+
+**⚠️ Про рабочий стол:** текущий `root2.img` = cloudOS (headless, БЕЗ SpringBoard, verdict из memory). Даже пробив dyld-стену, десктопа на нём НЕТ. Для GUI — `root2.hybrid.img` (iPhone-OS 26.1, есть SpringBoard), но там 26.1-rootfs против 26.4-KC = риск version-mismatch (dyld cache/фреймворки). Стены root-hash и последующие — те же (то же ядро). Приоритет: (1) добить mount-phase-2 dyld на root2.img; (2) прогнать те же хуки на hybrid.
