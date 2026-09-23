@@ -488,6 +488,22 @@ static const MemoryRegionOps gfx_ops = {
 /*  Display update & Animation                                              */
 /* ======================================================================== */
 
+static inline void untile_8x8(const uint32_t *src, uint32_t *dst, int w, int h)
+{
+    int tiles_x = w / 8;
+    int tiles_y = h / 8;
+    int idx = 0;
+    for (int ty = 0; ty < tiles_y; ty++) {
+        for (int tx = 0; tx < tiles_x; tx++) {
+            for (int i = 0; i < 64; i++) {
+                int lx = (i & 1) | ((i >> 1) & 2) | ((i >> 2) & 4);
+                int ly = ((i >> 1) & 1) | ((i >> 2) & 2) | ((i >> 3) & 4);
+                dst[(ty * 8 + ly) * w + (tx * 8 + lx)] = src[idx++];
+            }
+        }
+    }
+}
+
 static void apv_fb_update(void *opaque)
 {
     VrApvFbState *s = opaque;
@@ -523,19 +539,23 @@ static void apv_fb_update(void *opaque)
     size_t fb_size = (size_t)s->height * stride;
 
     if (pbase >= 0x70000000ULL && fb_size > 0 && fb_size <= 64 * 1024 * 1024) {
-        uint8_t *dst = (uint8_t *)surface_data(surface);
-        cpu_physical_memory_read(pbase, dst, fb_size);
+        static uint32_t raw_vram[1024 * 1024];
+        cpu_physical_memory_read(pbase, raw_vram, (size_t)s->width * s->height * 4);
 
         /* Check for non-zero guest pixels */
-        uint32_t *pixels = (uint32_t *)dst;
         size_t npixels = (size_t)s->width * s->height;
         size_t nonzero = 0;
         for (size_t i = 0; i < npixels; i += 32) {
-            if (pixels[i]) nonzero++;
+            if (raw_vram[i]) nonzero++;
             if (nonzero > 50) {
                 has_guest_content = true;
                 break;
             }
+        }
+
+        if (has_guest_content) {
+            uint32_t *dst = (uint32_t *)surface_data(surface);
+            untile_8x8(raw_vram, dst, s->width, s->height);
         }
     }
 
