@@ -8677,6 +8677,29 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                 for (int k = 0; k < seen_n; k++) {
                     if (seen[k] == upc) { isnew = false; break; }
                 }
+                /* Ordered (non-dedup) log of the first EL0 SVCs to capture one
+                 * full loop iteration: imm + pc + args, to see the call sequence
+                 * that keeps retrying /boot/active (the secure-world start). */
+                {
+                    static FILE *seq = NULL;
+                    static bool seq_init = false;
+                    static long sc = 0;
+                    if (!seq_init) { seq_init = true;
+                        seq = fopen("/home/ard/vrwork/svcseq.log", "w");
+                        if (!seq) seq = fopen("svcseq.log", "w"); }
+                    if (seq && sc < 700) {
+                        uint32_t si = 0;
+                        GetPhysAddrResult sr = {};
+                        ARMMMUFaultInfo sf = {};
+                        if (!get_phys_addr(env, upc - 4, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &sr, &sf))
+                            address_space_read(cs->as, sr.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &si, 4);
+                        int imm = ((si & 0xffe0001fu) == 0xd4000001u) ? (int)((si >> 5) & 0xffff) : -1;
+                        fprintf(seq, "#%ld pc=0x%" PRIx64 " imm=%d x0=0x%" PRIx64 " x1=0x%" PRIx64 " x2=0x%" PRIx64 " lr=0x%" PRIx64 "\n",
+                                sc, upc - 4, imm, a0, a1, a2, env->xregs[30]);
+                        fflush(seq);
+                    }
+                    sc++;
+                }
                 if (isnew && seen_n < 8192) {
                     seen[seen_n++] = upc;
                     /* env->pc points at the RET after the svc; real svc = upc-4.
