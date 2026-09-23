@@ -547,6 +547,25 @@ static void apv_fb_update(void *opaque)
             s->is_real_ui_frame = true;
             qemu_log_mask(LOG_GUEST_ERROR, "vr-apv-fb: LIVE GUEST UI FRAME DETECTED @ 0x%" PRIx64 "! Switching to SpringBoard/UI display.\n", pbase);
         }
+        static int64_t last_ppm_save = 0;
+        int64_t now_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+        if (now_ms - last_ppm_save > 5000) {
+            last_ppm_save = now_ms;
+            FILE *fppm = fopen("/home/ard/vrwork/framebuffer.ppm", "wb");
+            if (fppm) {
+                uint8_t *dst = (uint8_t *)surface_data(surface);
+                fprintf(fppm, "P6\n%u %u\n255\n", s->width, s->height);
+                for (size_t y = 0; y < s->height; y++) {
+                    uint32_t *row = (uint32_t *)(dst + y * stride);
+                    for (size_t x = 0; x < s->width; x++) {
+                        uint32_t p = row[x];
+                        uint8_t rgb[3] = { (uint8_t)(p >> 16), (uint8_t)(p >> 8), (uint8_t)p };
+                        fwrite(rgb, 1, 3, fppm);
+                    }
+                }
+                fclose(fppm);
+            }
+        }
     }
     dpy_gfx_update_full(s->con);
 
