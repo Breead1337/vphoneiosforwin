@@ -512,8 +512,42 @@ static void apv_fb_update(void *opaque)
     }
     s->boot_progress_pct = pct;
 
-    /* Render authentic iOS Apple boot screen with full 100% progress */
-    draw_apple_boot_screen(surface, s->boot_progress_pct);
+    /* Check if guest has configured a valid surface in RAM */
+    hwaddr pbase = s->surfaces[s->active_surface].phys_base;
+    if (pbase < 0x70000000ULL && s->surfaces[0].phys_base >= 0x70000000ULL) {
+        pbase = s->surfaces[0].phys_base;
+    }
+
+    bool has_guest_content = false;
+    uint32_t stride = s->stride ? s->stride : (s->width * 4);
+    size_t fb_size = (size_t)s->height * stride;
+
+    if (pbase >= 0x70000000ULL && fb_size > 0 && fb_size <= 64 * 1024 * 1024) {
+        uint8_t *dst = (uint8_t *)surface_data(surface);
+        cpu_physical_memory_read(pbase, dst, fb_size);
+
+        /* Check for non-zero guest pixels */
+        uint32_t *pixels = (uint32_t *)dst;
+        size_t npixels = (size_t)s->width * s->height;
+        size_t nonzero = 0;
+        for (size_t i = 0; i < npixels; i += 32) {
+            if (pixels[i]) nonzero++;
+            if (nonzero > 50) {
+                has_guest_content = true;
+                break;
+            }
+        }
+    }
+
+    if (!has_guest_content) {
+        /* Render authentic iOS Apple boot screen with full 100% progress */
+        draw_apple_boot_screen(surface, s->boot_progress_pct);
+    } else {
+        if (!s->is_real_ui_frame) {
+            s->is_real_ui_frame = true;
+            qemu_log_mask(LOG_GUEST_ERROR, "vr-apv-fb: LIVE GUEST UI FRAME DETECTED @ 0x%" PRIx64 "! Switching to SpringBoard/UI display.\n", pbase);
+        }
+    }
     dpy_gfx_update_full(s->con);
 
     /* One-shot: after boot settles, scan guest RAM for the XNU in-memory log

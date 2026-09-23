@@ -56,6 +56,28 @@ def nodename(n):
 d = open(RAW, "rb").read()
 root, end = parse(d, 0)
 assert ser(root) == d[:end], "round-trip mismatch"
+
+# vresearch101: XNU on this VM waits forever for exclaves/cL4 that do not exist
+# in emulation. If VR_STRIP_EXCLAVES is set, rename the exclave-enable DT
+# properties so XNU's DTGetProperty("has-exclaves"/"exclaves-enabled") lookups
+# fail (existence-gated) -> XNU should skip exclave bring-up. Same byte length,
+# so the tree stays valid.
+strip_note = "exclave-strip skipped (VR_STRIP_EXCLAVES unset)"
+if os.environ.get("VR_STRIP_EXCLAVES"):
+    RENAME = {b"has-exclaves": b"xas-exclaves", b"exclaves-enabled": b"xxclaves-enabled"}
+    hit = [0]
+    def walk(node):
+        props, kids = node
+        for idx in range(len(props)):
+            nm, sz, val = props[idx]
+            base = nm.rstrip(b"\0")
+            if base in RENAME:
+                props[idx] = (RENAME[base].ljust(32, b"\0"), sz, val)
+                hit[0] += 1
+        for k in kids:
+            walk(k)
+    walk(root)
+    strip_note = f"exclave-strip: renamed {hit[0]} prop(s)"
 chosen = next(k for k in root[1] if nodename(k) == b"chosen")
 mp = next(k for k in chosen[1] if nodename(k) == b"manifest-properties")
 spare = [i for i, q in enumerate(mp[0]) if q[0].startswith(b"UnusedIntegerProperty")]
@@ -85,4 +107,4 @@ if BOOTARGS:
 
 payload = ser(root) + d[end:]
 open(sys.argv[1], "wb").write(der(0x30, der(0x16, b"IM4P") + der(0x16, b"dtre") + der(0x16, b"patched") + der(0x04, payload)))
-print(f"dt {len(d):#x} -> {len(payload):#x}, chosen/manifest-properties: {list(MANIFEST)}, {tc_note}, {ba_note}")
+print(f"dt {len(d):#x} -> {len(payload):#x}, chosen/manifest-properties: {list(MANIFEST)}, {tc_note}, {ba_note}, {strip_note}")

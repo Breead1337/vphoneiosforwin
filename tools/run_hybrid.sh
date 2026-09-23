@@ -6,6 +6,7 @@ FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
 TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
 
 rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log
+export VR_VBAR_BASE="0xfffffe0008a5f000"
 export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe0007cf3d38,0xfffffe0007cf3d9c,0xfffffe0008f1781c,0xfffffe0008aaab18,0xfffffe0008aaab34,0xfffffe0008aafd1c"
 # 0xfffffe0008ed691c — rootvp auth (release KC: cbnz w0, #0x8ed6b78 panic "rootvp not authenticated").
 # 0xfffffe00088cc774,0xfffffe00088cc788 — APFS handle_get_dev_by_role entitlement bypass (Patch 16).
