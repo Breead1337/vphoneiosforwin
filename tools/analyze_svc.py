@@ -1,19 +1,39 @@
-import sys
+import re
 from collections import Counter
 
-def main():
-    log_path = sys.argv[1] if len(sys.argv) > 1 else "/home/ard/vrwork/svc.log"
-    c = Counter()
-    with open(log_path, "r", errors="ignore") as f:
-        for line in f:
-            if line.startswith("["):
-                idx = line.find("]")
-                if idx != -1:
-                    c[line[:idx+1]] += 1
+def analyze():
+    svc_path = "/home/ard/vrwork/svc.log"
+    sys_counts = Counter()
+    paths = set()
+    spawns = []
     
-    print("=== Top Syscalls in svc.log ===")
-    for tag, count in c.most_common(50):
-        print(f"{count:6d}  {tag}")
+    with open(svc_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            # Extract syscall name
+            m = re.search(r'\[SVC(?:-GL)?\s+(\w+)\s+(-?\d+)\s+\(([^)]+)\)\]', line)
+            if m:
+                sclass, snum, sname = m.groups()
+                sys_counts[f"{sclass}:{sname}:{snum}"] += 1
+                if "spawn" in sname or "exec" in sname:
+                    spawns.append(line.strip())
+            
+            # Extract strings
+            for sm in re.finditer(r's\d="([^"]+)"', line):
+                val = sm.group(1)
+                if "/" in val or ".plist" in val or "SpringBoard" in val or "backboard" in val:
+                    paths.add(val)
 
-if __name__ == "__main__":
-    main()
+    print("=== SYSCALL COUNTS (TOP 25) ===")
+    for k, v in sys_counts.most_common(25):
+        print(f"{v:6d}  {k}")
+        
+    print("\n=== SPAWN / EXEC CALLS ===")
+    for s in spawns[:20]:
+        print(s)
+        
+    print(f"\n=== PATHS / STRINGS ACCESSED ({len(paths)}) ===")
+    for p in sorted(paths):
+        print(" ", p)
+
+if __name__ == '__main__':
+    analyze()

@@ -3,7 +3,7 @@ set -e
 Q=~/inferno/build/qemu-system-aarch64
 W=~/vrwork
 FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
-TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
+TC=/mnt/d/vphonewin/_work/tc/merged.trst.bin          # merged TrustCache (CloudOS + iOS 18 iPhone 16)
 
 rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log
 export VR_VBAR_BASE="0xfffffe0008a5f000"

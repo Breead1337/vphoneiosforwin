@@ -15,7 +15,7 @@ MANIFEST = {"ECID": struct.pack("<Q", 0)}  # ponytail: only what XNU asked for s
 # TrustCache load address in guest RAM — must match VR_TC_PADDR in vresearch101.c.
 # Top 64 KiB of the default 4 GiB VR_MEM (0x70000000 + 4 GiB - 64 KiB); iBoot allocates
 # bottom-up so this stays untouched (highest EL0 SP seen so far ~0x16f6a0000).
-TC_PADDR = 0x16FFF0000
+TC_PADDR = 0x16FE00000
 TC_PATH = os.environ.get("VR_TRUSTCACHE")  # raw trst payload (after `ipsw img4 im4p extract`)
 
 # /chosen/boot-args — iBoot обычно берёт из NVRAM (у нас пустой). XNU читает

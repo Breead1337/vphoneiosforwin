@@ -8843,14 +8843,15 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                 bool is_spawn = (sn == 194 || sn == 244);
                 bool is_exec  = (sn == 59);
                 bool is_open  = (sn == 5 || sn == 423 || sn == 424);
-                if (!from_gl && (is_spawn || is_exec || is_open)) {
+                if (is_spawn || is_exec || is_open) {
                     uint64_t pathptr = is_spawn ? a1 : (sn == 424 ? a1 : a0);
                     char pbuf[256] = {0};
                     if (pathptr >= 0x1000 && pathptr != 0xffffffffffffffffULL) {
                         for (int i = 0; i < 255; i++) {
                             GetPhysAddrResult r = {};
                             ARMMMUFaultInfo fi = {};
-                            if (!get_phys_addr(env, pathptr + i, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi)) {
+                            if (!get_phys_addr(env, pathptr + i, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi) ||
+                                !get_phys_addr(env, pathptr + i, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r, &fi)) {
                                 char c = 0;
                                 address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
                                 if (!c) break;

@@ -460,7 +460,7 @@ static void vr_init(MachineState *machine)
      * ponytail: pinned top 64 KiB of the default 4 GiB RAM (iBoot grows bottom-up;
      * highest EL0 SP observed so far is ~0x16f6a0000, leaving ~5 MiB headroom).
      */
-    #define VR_TC_PADDR 0x16FFF0000ULL
+    #define VR_TC_PADDR 0x16FE00000ULL
     const char *tc_path = g_getenv("VR_TRUSTCACHE");
     if (tc_path && *tc_path) {
         gsize tc_len = 0;
