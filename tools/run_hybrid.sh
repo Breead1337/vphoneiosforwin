@@ -77,8 +77,8 @@ set +e
 timeout ${T:-360} "$Q" -M vresearch101 -smp 1 -m 4G \
   -bios "$FW" \
   -drive if=pflash,format=raw,file="$W/aux.test" \
-  -drive if=pflash,format=raw,file="$W/root2.img",file.locking=off \
-  -drive if=none,id=root0,format=raw,file="$W/root2.img",file.locking=off \
+  -drive if=pflash,format=raw,file="$W/root2.hybrid.img",file.locking=off \
+  -drive if=none,id=root0,format=raw,file="$W/root2.hybrid.img",file.locking=off \
   -device vmapple-virtio-blk-pci,drive=root0,variant=root \
   -display gtk -serial file:"$W/us.uart" \
   -d unimp,guest_errors,int -D "$W/us.log" \
