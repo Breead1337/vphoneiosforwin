@@ -8717,6 +8717,57 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                 }
             }
 
+            /* vresearch101 PATH SNIFFER (both worlds): scan x0..x5 of every EL0
+             * SVC for a pointer to a "/..."-leading string and log distinct ones.
+             * ABI-agnostic: catches exec/spawn/open/stat targets whatever the
+             * gateway convention, incl. what launchd actually launches. */
+            {
+                static char pseen[512][96];
+                static int pseen_n = 0;
+                static FILE *pf = NULL;
+                static bool pf_init = false;
+                if (!pf_init) {
+                    pf_init = true;
+                    pf = fopen("/home/ard/vrwork/paths.log", "w");
+                    if (!pf) pf = fopen("paths.log", "w");
+                }
+                uint64_t argv[6] = { env->xregs[0], env->xregs[1], env->xregs[2],
+                                     env->xregs[3], env->xregs[4], env->xregs[5] };
+                for (int ai = 0; ai < 6; ai++) {
+                    uint64_t pp = argv[ai];
+                    if (pp < 0x1000 || pp == 0xffffffffffffffffULL) continue;
+                    char pb[96] = {0};
+                    GetPhysAddrResult pr = {};
+                    ARMMMUFaultInfo pfa = {};
+                    if (get_phys_addr(env, pp, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &pr, &pfa)) continue;
+                    char c0 = 0;
+                    address_space_read(cs->as, pr.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c0, 1);
+                    if (c0 != '/') continue;
+                    for (int q = 0; q < 95; q++) {
+                        GetPhysAddrResult r3 = {};
+                        ARMMMUFaultInfo f3 = {};
+                        if (get_phys_addr(env, pp + q, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r3, &f3)) break;
+                        char c = 0;
+                        address_space_read(cs->as, r3.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
+                        if (c < 0x20 || c >= 0x7f) break;
+                        pb[q] = c;
+                    }
+                    if (pb[1] == 0) continue; /* just "/" */
+                    bool dup = false;
+                    for (int k = 0; k < pseen_n; k++) {
+                        if (!strncmp(pseen[k], pb, sizeof(pb))) { dup = true; break; }
+                    }
+                    if (!dup && pseen_n < 512) {
+                        strncpy(pseen[pseen_n], pb, sizeof(pseen[0]) - 1);
+                        pseen_n++;
+                        if (pf) {
+                            fprintf(pf, "%s%s pc=0x%" PRIx64 "\n", from_gl ? "[GL] " : "", pb, upc - 4);
+                            fflush(pf);
+                        }
+                    }
+                }
+            }
+
             /* vresearch101: class-agnostic spawn/exec tracer. The class decode
              * above is unreliable for this boot (real launchd spawns show up as
              * "FW"), so key off the raw syscall number and log the path arg to a
