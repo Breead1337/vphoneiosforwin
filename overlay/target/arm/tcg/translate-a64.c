@@ -10311,28 +10311,46 @@ static void aarch64_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
  * KASLR slide comes from VBAR_EL1 (XNU sets it to static 0xfffffe0008a5f000 + slide, 26.4 vresearch101).
  * Only TBs translated after VBAR is set are hooked.
  */
-static int vr_static_match(CPUARMState *env, uint64_t pc, const char *var, uint64_t *w, int *n)
+static inline uint64_t vr_vbar_base(void)
+{
+    static uint64_t b = 0;
+    if (!b) {
+        const char *e = getenv("VR_VBAR_BASE");
+        b = (e && *e) ? strtoull(e, NULL, 0) : 0xfffffe0008a5f000ULL;
+    }
+    return b;
+}
+
+static bool vr_static_match(CPUARMState *env, uint64_t pc, const char *env_var,
+                            uint64_t *w, int *n)
 {
     if (*n < 0) {
-        const char *e = getenv(var);
+        const char *e = getenv(env_var);
         *n = 0;
         while (e && *e && *n < 64) {
             char *end;
-            uint64_t val = strtoull(e, &end, 0);
-            if (end == e) {
-                e++;
-                continue;
-            }
-            w[(*n)++] = val;
+            uint64_t a = strtoull(e, &end, 0);
+            w[(*n)++] = a;
             e = *end ? end + 1 : end;
         }
     }
-    if (!*n) return 0;
+    if (!*n) return false;
+    /* iBoot runs at EL0 with fixed low addresses BEFORE XNU boots (VBAR not yet
+     * kernel). Allow raw-PC watches for the iBoot range so we can trace iBoot. */
+    if (arm_current_el(env) == 0 && pc >= 0x70000000ULL && pc < 0x80000000ULL) {
+        for (int i = 0; i < *n; i++) if (w[i] == pc) return true;
+        return false;
+    }
     uint64_t vbar = env->cp15.vbar_el[1];
+    /* Only allow hooks when the XNU kernel has booted (VBAR in kernel space) */
+    if (vbar < 0xfffffe0000000000ULL) {
+        return false;
+    }
     uint64_t st_k = 0, st_u = 0;
     int have_k = 0, have_u = 0;
-    if (vbar >= 0xfffffe0000000000ULL && !((vbar - 0xfffffe0008a5f000ULL) & 0x3fff)) {
-        st_k = pc - (vbar - 0xfffffe0008a5f000ULL); have_k = 1;
+    uint64_t kbase = vr_vbar_base();
+    if (!((vbar - kbase) & 0x3fff)) {
+        st_k = pc - (vbar - kbase); have_k = 1;
     }
     /* ponytail: user-space hook via VR_USLIDE=<launchd ASLR slide>. Auto-detected
      * from first EL0 entry when unset; helper.c fills VR_USLIDE_AUTO. */
@@ -10343,17 +10361,17 @@ static int vr_static_match(CPUARMState *env, uint64_t pc, const char *var, uint6
         const char *e = getenv("VR_USLIDE");
         if (e && *e) uslide = strtoull(e, NULL, 0);
     }
-    /* runtime auto: helper.c publishes it via a global once EL0 fires */
     extern uint64_t vr_uslide_auto;
     uint64_t us = uslide ? uslide : vr_uslide_auto;
-    if (us && pc < 0x1000000000ULL) { /* user VA range */
-        st_u = pc - us; have_u = 1;
+    if (arm_current_el(env) == 0 && pc < 0x1000000000ULL) { /* real EL0 userspace (unguarded or guarded) */
+        st_u = us ? (pc - us) : pc;
+        have_u = 1;
     }
     for (int i = 0; i < *n; i++) {
-        if (have_k && w[i] == st_k) return 1;
-        if (have_u && w[i] == st_u) return 1;
+        if (have_k && w[i] == st_k) return true;
+        if (have_u && w[i] == st_u) return true;
     }
-    return 0;
+    return false;
 }
 
 static bool vr_watch_hit(CPUARMState *env, uint64_t pc)
@@ -10385,6 +10403,14 @@ static bool vr_ret0_hit(CPUARMState *env, uint64_t pc)
     return vr_static_match(env, pc, "VR_RET0", w, &n);
 }
 
+static bool vr_ret1_hit(CPUARMState *env, uint64_t pc)
+{
+    /* mov x0,#1 then plain RET to caller's LR — force function to return true (1) */
+    static uint64_t w[64];
+    static int n = -1;
+    return vr_static_match(env, pc, "VR_RET1", w, &n);
+}
+
 static bool vr_b_hit(CPUARMState *env, uint64_t pc, uint64_t *dst_out)
 {
     static uint64_t src[64], dst[64];
@@ -10404,11 +10430,28 @@ static bool vr_b_hit(CPUARMState *env, uint64_t pc, uint64_t *dst_out)
             e = *end ? end + 1 : end;
         }
     }
+    if (!n) return false;
     uint64_t vbar = env->cp15.vbar_el[1];
-    if (!n || ((vbar - 0xfffffe0008a5f000ULL) & 0x3fff) || vbar < 0xfffffe0000000000ULL) {
+    /* Only allow hooks when the XNU kernel has booted (VBAR in kernel space) */
+    if (vbar < 0xfffffe0000000000ULL) {
         return false;
     }
-    uint64_t slide = vbar - 0xfffffe0008a5f000ULL;
+    extern uint64_t vr_uslide_auto;
+    if (arm_current_el(env) == 0 && pc < 0x1000000000ULL) { /* real EL0 userspace (unguarded or guarded) */
+        uint64_t st = vr_uslide_auto ? (pc - vr_uslide_auto) : pc;
+        for (int i = 0; i < n; i++) {
+            if (src[i] == st || src[i] == pc) {
+                *dst_out = dst[i] + (vr_uslide_auto ? vr_uslide_auto : 0);
+                return true;
+            }
+        }
+        return false;
+    }
+    uint64_t kbase = vr_vbar_base();
+    if ((vbar - kbase) & 0x3fff) {
+        return false;
+    }
+    uint64_t slide = vbar - kbase;
     uint64_t st = pc - slide;
     for (int i = 0; i < n; i++) {
         if (src[i] == st) {
@@ -10483,6 +10526,14 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         s->base.is_jmp = DISAS_JUMP;
         return;
     }
+    if (vr_ret1_hit(env, pc)) {
+        /* mov x0,#1 then plain RET to caller's LR — force function to return true (1) */
+        tcg_gen_movi_i64(cpu_reg(s, 0), 1);
+        gen_a64_set_pc(s, cpu_reg(s, 30));
+        s->base.pc_next = pc + 4;
+        s->base.is_jmp = DISAS_JUMP;
+        return;
+    }
     uint64_t vr_target_pc;
     if (vr_b_hit(env, pc, &vr_target_pc)) {
         s->base.pc_next = pc + 4;
@@ -10491,6 +10542,144 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         return;
     }
     insn = arm_ldl_code(env, &s->base, pc, s->sctlr_b);
+    if (arm_current_el(env) == 0 && env->cp15.vbar_el[1] >= 0xfffffe0000000000ULL) {
+        bool same_page = (pc & 0xfff) >= 4 && (pc & 0xfff) <= 0xff8;
+        if (same_page) {
+            if (insn == 0x360000a8) {
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0xb94053e8 && next_i == 0x90000120) {
+                    insn = 0x14000011; /* b +0x44: skip fsck, mount-phase-1, data-protection, obliteration -> detect-installed-roots */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: bypassed early boot tasks to detect-installed-roots at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0xd503237f) {
+                /* launchd: boot_task_failed pacibsp -> ret (prevent userspace panic on any boot task failure) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x17fffba3 && next_i == 0xd101c3ff) {
+                    insn = 0xd65f03c0; /* ret */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: NOPed boot_task_failed at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0xb4000740) {
+                /* launchd: cbz x0, #0x100049ad8 after bl 0x10005a350 -> NOP (skip assertion failure) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x94004259 && next_i == 0xf906dea0) {
+                    insn = 0xd503201f; /* nop */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: bypassed launchd 0x1000499f0 assertion cbz at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x540013c1) {
+                /* launchd: b.ne #0x10001b96c (skip No service cache) -> NOP to force calling 0x10001bad8 */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x7100051f && next_i == 0x90000348) {
+                    insn = 0xd503201f; /* nop */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: force launchd plist scan branch 1 at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x37001348) {
+                /* launchd: tbnz w8, #0, #0x10001b96c -> NOP to force calling 0x10001bad8 */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x39400108 && next_i == 0xd2800000) {
+                    insn = 0xd503201f; /* nop */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: force launchd plist scan branch 2 at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x1a9f17e5) {
+                /* dyld: cset w5, eq (simulateInUserspace) -> mov w5, #0 to force kernel-assisted map_with_linking_np */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x7100053f && next_i == 0xf9403a87) {
+                    insn = 0x52800005; /* mov w5, #0 */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: forced dyld map_with_linking_np syscall at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0xb81883a5) {
+                /* dyld: stur w5, [x29, #-0x78] in setUpPageInLinkingRegions -> stur wzr, [x29, #-0x78] (force simulateInUserspace=0) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0xaa0603f8 && next_i == 0xaa0403fc) {
+                    insn = 0xb81883bf; /* stur wzr, [x29, #-0x78] */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: forced dyld simulateInUserspace=0 in 0x2aa9c at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x1400004b) {
+                /* dyld: b #0x2ade8 userspace fixup fallback -> NOP to continue to kernel linking path */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0xf85903b4 && next_i == 0xf81883a9) {
+                    insn = 0xd503201f; /* nop */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: bypassed dyld userspace fixup branch at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x54000302) {
+                /* dyld: b.hs #0x2b5cc (out of range bind ordinal panic) -> b +0x1c (#0x2b588, skip bind) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x6b0a013f && next_i == 0xd370c322) {
+                    insn = 0x14000007; /* b +0x1c */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: bypassed dyld out of range bind ordinal 1 at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x54000242) {
+                /* dyld: b.hs #0x61db0 (out of range bind ordinal panic) -> b +0x14 (#0x61d7c, skip bind) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x6b0e01bf && next_i == 0xd358fd8d) {
+                    insn = 0x14000005; /* b +0x14 */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: bypassed dyld out of range bind ordinal 2 at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x54000262) {
+                /* dyld: b.hs #0x61e70 (out of range bind ordinal panic) -> b +0x14 (#0x61e38, skip bind) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x6b0b015f && next_i == 0x5314652b) {
+                    insn = 0x14000005; /* b +0x14 */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: bypassed dyld out of range bind ordinal 3 at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x54000282) {
+                /* dyld: b.hs #0x7968 (out of range bind ordinal panic) -> b.hs #0x799c (safe NULL bind & return) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0xeb08015f && next_i == 0xf9401a88) {
+                    insn = 0x54000422; /* b.hs #0x799c */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: redirected dyld out of range bind ordinal at pc=0x%" PRIx64 " to safe handler\n", pc);
+                }
+            } else if (insn == 0x54000289) {
+                /* dyld: b.ls #0x5ef1c (out of range bind ordinal panic) -> b.ls #0x5ef30 (set x22=0 and continue) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0xeb08013f && next_i == 0xf9400149) {
+                    insn = 0x54000329; /* b.ls #0x5ef30 */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: redirected dyld out of range bind ordinal 2 at pc=0x%" PRIx64 " to safe handler\n", pc);
+                }
+            } else if (insn == 0xa9bf7bfd) {
+                /* launchd: boot_mode_matches prologue stp x29,x30 -> mov w0, #1 */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                uint32_t next2_i = arm_ldl_code(env, &s->base, pc + 8, s->sctlr_b);
+                if (prev_i == 0xd503237f && next_i == 0x910003fd && next2_i == 0xb40001c0) {
+                    insn = 0x52800020; /* mov w0, #1 */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: force boot_mode_matches w0=1 at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x910003fd) {
+                /* launchd: boot_mode_matches mov x29,sp -> retab (PAC-clean return 1 to caller) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0xa9bf7bfd && next_i == 0xb40001c0) {
+                    insn = 0xd65f0bff; /* retab */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: force boot_mode_matches retab at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0x36000088) {
+                /* dyld: memoryManager tbz w8, #0 -> NOP (skip sMemoryManagerInitialized assert) */
+                uint32_t next_i = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
+                uint32_t prev_i = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
+                if (prev_i == 0x39400108 && next_i == 0xd00005c0) {
+                    insn = 0xd503201f; /* nop */
+                    qemu_log_mask(LOG_GUEST_ERROR, "vr: bypassed dyld sMemoryManagerInitialized assert at pc=0x%" PRIx64 "\n", pc);
+                }
+            } else if (insn == 0xd4200020) {
+                /* EL0 userspace brk #1 (assertion trap) -> NOP to avoid halting/terminating PID 1 */
+                insn = 0xd503201f; /* nop */
+                qemu_log_mask(LOG_GUEST_ERROR, "vr: NOPed userspace brk #1 at pc=0x%" PRIx64 "\n", pc);
+            }
+        }
+    }
     s->insn = insn;
     s->base.pc_next = pc + 4;
 
