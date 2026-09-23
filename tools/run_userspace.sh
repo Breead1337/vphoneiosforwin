@@ -3,7 +3,10 @@ set -e
 Q=~/inferno/build/qemu-system-aarch64
 W=~/vrwork
 FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
-TC=/mnt/d/vphonewin/_work/tc/os.trst.bin              # raw `trst` payload for vresearch101 OS DMG
+TC=/mnt/d/vphonewin/_work/tc/merged.trst.bin          # cloudOS(262) + iPhone-OS(3472) = 3734 cdhashes.
+# (was os.trst.bin = cloudOS-only 262; hybrid iPhone-OS binaries like /sbin/launchd are adhoc-signed
+#  platform binaries whose trust comes from the static trust cache by cdhash — need the merged TC so TXM
+#  finds them instead of rejecting "CodeSignature".)
 
 rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log $W/ibootwatch.log
 export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe0007cf3d38,0xfffffe0007cf3d9c,0xfffffe0008f1781c,0xfffffe0008aaab18,0xfffffe0008aaab34,0xfffffe0008aafd1c"
@@ -38,7 +41,15 @@ export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50,0xfffffe0008ab04d4,0xfffff
 # 0xfffffe0008aaa8f0: AppleSEPBooter SEP wait/send function entry — returns 0 immediately.
 #   Contains wfe spin loop at 0x8aaab18 that blocks indefinitely waiting for SEP mailbox event.
 #   Without real SEP hardware, wfe never gets a WakeUp Event and the kernel hangs forever.
-export VR_B="0xfffffe00088b7e08:0xfffffe00088b8058,0xfffffe0007cf3ce4:0xfffffe0007cf3d90,0xfffffe0007cf3d94:0xfffffe0007cf3dac,0xfffffe0008b06710:0xfffffe0008b06a44,0xfffffe0008ab064c:0xfffffe0008ab05a0,0xfffffe0009271100:0xfffffe00092711e4,0xfffffe0008aafca0:0xfffffe0008aafcbc"
+export VR_B="0xfffffe00088b7e08:0xfffffe00088b8058,0xfffffe0007cf3ce4:0xfffffe0007cf3d90,0xfffffe0007cf3d94:0xfffffe0007cf3dac,0xfffffe0008b06710:0xfffffe0008b06a44,0xfffffe0008ab064c:0xfffffe0008ab05a0,0xfffffe0009271100:0xfffffe00092711e4,0xfffffe0008aafca0:0xfffffe0008aafcbc,0xfffffe0007d57a70:0xfffffe0007d57aac,0xfffffe0007d57c58:0xfffffe0007d57c70,0xfffffe0007d57c78:0xfffffe0007d57880,0xfffffe0007d53cb4:0xfffffe0007d53d44,0xfffffe0007d577d4:0xfffffe0007d57880,0xfffffe000885cc60:0xfffffe000885cc78"
+# --- AMFI CoreTrust / vnode_check_signature bypass (research KC; re-enabled for hybrid iPhone-OS
+#     adhoc-signed binaries, which trip the CT-policy reject the platform-signed cloudOS launchd skipped):
+#   0x7d57a70:0x7d57aac  CT-policy reject -> continue (skip "unsuitable CT policy" reject).
+#   0x7d57c58:0x7d57c70  skip StaticPlatformPolicy<2> print.
+#   0x7d57c78:0x7d57880  signature rejection -> accept path (attaches csblob, cs_flags|=0x20000000, w21=0).
+#   0x7d53cb4:0x7d53d44  StaticPlatformPolicy in checkForLaunchWarningsInDaemon.
+#   0x7d577d4:0x7d57880  vnode_check_signature TXM reject -> accept path.
+#   0x885cc60:0x885cc78  AMFI evaluate.c shenanigans! bypass.
 # 0xfffffe00088b7e08:0xfffffe00088b8058 — APFS _apfs_vfsop_mount kernel_task check bypass (Patch 13).
 # 0xfffffe0007cf3ce4:0xfffffe0007cf3d90 — AMFI release KC: redirect w24!=0 failure branch directly to success path.
 # 0xfffffe0007cf3d94:0xfffffe0007cf3dac — AMFI release KC: force w9=1 and jump directly to flag setting/csblob attach.
@@ -85,8 +96,8 @@ set +e
 timeout ${T:-360} "$Q" -M vresearch101 -smp 1 -m 4G \
   -bios "$FW" \
   -drive if=pflash,format=raw,file="$W/aux.test" \
-  -drive if=pflash,format=raw,file="$W/root2.img",file.locking=off \
-  -drive if=none,id=root0,format=raw,file="$W/root2.img",file.locking=off \
+  -drive if=pflash,format=raw,file="${ROOT2:-$W/root2.img}",file.locking=off \
+  -drive if=none,id=root0,format=raw,file="${ROOT2:-$W/root2.img}",file.locking=off \
   -device vmapple-virtio-blk-pci,drive=root0,variant=root \
   -display gtk -serial file:"$W/us.uart" \
   -d unimp,guest_errors,int -D "$W/us.log" \

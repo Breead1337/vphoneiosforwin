@@ -1897,3 +1897,27 @@ init для fsck**, но следующий exec bad_macho — от другог
 **Прогресс одной строкой:** iBoot handoff → XNU (SEP/APFS/root-mount) → [root-hash ✓] → libignition → **launchd PID 1 boot-tasks** → стоп на mount-phase-2 dyld-bind. Т.е. от «iBoot-loop» (ошибочно) до живого launchd в userspace.
 
 **⚠️ Про рабочий стол:** текущий `root2.img` = cloudOS (headless, БЕЗ SpringBoard, verdict из memory). Даже пробив dyld-стену, десктопа на нём НЕТ. Для GUI — `root2.hybrid.img` (iPhone-OS 26.1, есть SpringBoard), но там 26.1-rootfs против 26.4-KC = риск version-mismatch (dyld cache/фреймворки). Стены root-hash и последующие — те же (то же ядро). Приоритет: (1) добить mount-phase-2 dyld на root2.img; (2) прогнать те же хуки на hybrid.
+
+## Обновление 24.09 (71) — Hybrid (iPhone-OS со SpringBoard): пробита AMFI, изолирована стена TXM code-sign
+
+Цель — рабочий стол, поэтому переключился с cloudOS (headless) на `root2.hybrid.img` (iPhone-OS 26.1, есть SpringBoard/UIKit). Тот же vresearch101-KC (26.4) → те же хуки. Добавлен `ROOT2=` override в `run_userspace.sh` (гонять любой образ одними хуками).
+
+**Прогресс по стенам на hybrid:**
+1. root-hash — те же хуки (`is_root_hash_authentication_required`/`authapfs_seal_is_broken`→0), обойдена ✓.
+2. **AMFI CoreTrust — ПРОБИТА.** iPhone-OS `/sbin/launchd` adhoc-подписан → AMFI: «unsuitable CT policy 0 for this platform/device, rejecting signature» → «code signature validation failed». Вернул в активный VR_B задокументированный (сессии 62-63) набор AMFI/vnode_check_signature-обходов из research KC: `0x7d57a70:0x7d57aac` (CT-policy), `0x7d57c58:0x7d57c70`, `0x7d57c78:0x7d57880` (reject→accept), `0x7d53cb4:0x7d53d44`, `0x7d577d4:0x7d57880`, `0x885cc60:0x885cc78`. → «code signature validation failed» ИСЧЕЗЛА.
+3. **TXM code-signature — СТЕНА (текущий фронтир).** После AMFI отклонение ушло в secure-world: `TXM [Error]: CodeSignature: selector: 24 | 0x02 | 0x22 | 3` → паника.
+
+**Диагностика TXM-стены (доказательно):**
+- Trust cache: cloudOS `os.trst.bin` (262) НЕ содержит iPhone-OS launchd. Есть `merged.trst.bin` = cloudOS(262) ∪ iPhone-OS(3472) = 3734, ОТСОРТИРОВАН, cdhash launchd (`e3dcc996adddfa89e9ef61c2f529086ed894faea`) В НЁМ ЕСТЬ (проверено: извлёк /sbin/launchd из hybrid vol=1, посчитал SHA256(CodeDirectory)[:20], `tools/launchd_cdhash.py`).
+- `run_userspace.sh` грузил маленький `os.trst.bin` → переключил VR_TRUSTCACHE на `merged.trst.bin`.
+- DT-размер TrustCache задаётся dtpatch.py = `getsize(TC)`; hybrid-DT патчился под старый размер → перепатчил+переинжектил (`IMG=root2.hybrid.img TC=merged.trst.bin inject_tc_dt.sh`), теперь DT = `TrustCache @0x16fe00000+0x15e28` (89640 б). Эмулятор грузит полный merged в RAM (подтв. «89640 B loaded»).
+- **ИТОГ: TC правильный, отсортирован, загружен, DT-размер верный, cdhash launchd присутствует — TXM ВСЁ РАВНО отвергает** `CodeSignature: selector 24`. TXM ЧИТАЕТ `/chosen/memory-map/TrustCache` (строки в txm.iphoneos.research.bin подтверждают), но selector-24-проверка не проходит по причине ГЛУБЖЕ cdhash-lookup (флаги записи / constraint category / ERM-тип / формат module).
+
+**Разбор TXM (`fw/cloud/raw/txm.iphoneos.research.bin`, Mach-O flat-map vmaddr=0xfffffff017004000+foff):** функция загрузки TC @0x17026xxx: логи «loaded external trust cache modules %u/%u» / «missing trust cache range from device tree» / «disallowed loading ERM trust cache» (@0x2623c проверяет DT-свойства type==3 && ==0x64 → ERM-отказ). Отдельно — CodeSignature selector-24 валидация (тот самый reject). Коды ошибок 0x22/0x23/0x24/0x25/0x26 в load-функции.
+
+**СЛЕД. ШАГ (для рабочего стола):** пробить TXM code-sign одним из:
+- (A) Рецептный TXM-патч (vphone-cli: trustcache-bypass `mov x0,#0`, 6 патчей/11 инстр., `txm_dev.py`) — реверс selector-24 в НАШЕМ txm.iphoneos.research, обход. TXM в GL1: эмулятор уже считает `slide=vbar_gl[1]−0xfffffff0270a5000` (helper-a64.c), но база TXM-бинаря 0xfffffff017004000 — сперва найти реальную runtime-базу TXM (рантайм-проба GL1), затем VR_*-хук расширить на GL1 ЛИБО пропатчить txm.img4 на диске (image4-bypass должен пустить).
+- (B) Заменить preboot StaticTrustCache (`Ap,StaticTrustCache.img4`) на iPhone-OS TC — тот, что TXM грузит при secure-boot (менее вероятно из-за верификации самого TC).
+После TXM: dyld_shared_cache (26.1) под 26.4-ядром → backboardd/SpringBoard → графика (vr-apv-fb). Каждая — стена; version-mismatch 26.1/26.4 — риск.
+
+**Тулы:** `find_roothash_hooks.py` (авто-парс сегментов + ADRP+ADD-скан), `check_launchd_cdhash.sh` (mount vol=1 + extract launchd), `launchd_cdhash.py` (cdhash + TC-membership). run_userspace.sh: `ROOT2=` override + `VR_WATCH_EXTRA`.
