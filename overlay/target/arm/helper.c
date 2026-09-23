@@ -8765,6 +8765,23 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                             fflush(pf);
                         }
                     }
+                    /* Non-deduped sequence of firmware/boot accesses to expose the
+                     * loop: what the loader keeps re-opening while stuck. */
+                    if (pb[0] == '/' && (strstr(pb, "firmware") || strstr(pb, "kernelcache") ||
+                                         !strncmp(pb, "/boot", 5))) {
+                        static FILE *fq = NULL;
+                        static bool fq_init = false;
+                        static long fqc = 0;
+                        if (!fq_init) { fq_init = true;
+                            fq = fopen("/home/ard/vrwork/fwseq.log", "w");
+                            if (!fq) fq = fopen("fwseq.log", "w"); }
+                        if (fq && fqc < 400) {
+                            fprintf(fq, "#%ld %s%.64s pc=0x%" PRIx64 " x0=0x%" PRIx64 "\n",
+                                    fqc, from_gl ? "[GL] " : "", pb, upc - 4, env->xregs[0]);
+                            fflush(fq);
+                        }
+                        fqc++;
+                    }
                 }
             }
 
