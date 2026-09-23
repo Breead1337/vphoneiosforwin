@@ -8658,34 +8658,63 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
             uint64_t a3 = env->xregs[3];
             uint64_t upc = env->pc;
 
-            /* vresearch101: one-shot ground-truth dump of dyld's startup wait
-             * loop (0x70082300..0x70082420). Read the mach port dyld receives on
-             * (guest-VA 0x700b9dd8) and the two TLS slots it polls. Tells us
-             * whether the port is NULL/bad (busy-spin) or valid (real event
-             * loop), and whether dyld ever leaves this loop. Read-only. */
-            if (!from_gl && upc >= 0x70082300 && upc <= 0x70082420) {
-                static long wl = 0;
-                static FILE *wlog = NULL;
-                static bool wlog_init = false;
-                if (!wlog_init) {
-                    wlog_init = true;
-                    wlog = fopen("/home/ard/vrwork/dyldwait.log", "w");
-                    if (!wlog) wlog = fopen("dyldwait.log", "w");
+            /* vresearch101 CLEAN EL0 TRACER: for each distinct EL0 SVC site, log
+             * pc + the ACTUAL instruction word read at env->pc (EL0 stage-1
+             * regime) + x16 + lr. Resolves whether env->pc is the real svc site
+             * and whether the running dyld matches _work/dyld. De-dup via an
+             * open-addressing pc set so the log stays small. Read-only. */
+            if (!from_gl) {
+                static uint64_t seen[8192];
+                static int seen_n = 0;
+                static FILE *etr = NULL;
+                static bool etr_init = false;
+                if (!etr_init) {
+                    etr_init = true;
+                    etr = fopen("/home/ard/vrwork/eltrace.log", "w");
+                    if (!etr) etr = fopen("eltrace.log", "w");
                 }
-                if (wlog && (wl < 20 || wl % 3000 == 0)) {
-                    uint64_t tls = env->cp15.tpidrro_el[0];
-                    uint32_t port = 0, t10 = 0, t48lo = 0;
-                    #define RD32(va, dst) do { GetPhysAddrResult r = {}; ARMMMUFaultInfo fi = {}; \
-                        if (!get_phys_addr(env, (va), MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi)) \
-                            address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &(dst), 4); } while (0)
-                    RD32(0x700b9dd8ULL, port);
-                    if (tls) { RD32(tls + 0x10, t10); RD32(tls + 0x48, t48lo); }
-                    fprintf(wlog, "[dyldwait #%ld] pc=0x%" PRIx64 " port@b9dd8=0x%x tls=0x%" PRIx64 " tls+0x10=0x%x tls+0x48=0x%x x0=0x%" PRIx64 " x1=0x%" PRIx64 " lr=0x%" PRIx64 "\n",
-                            wl, upc, port, tls, t10, t48lo, a0, a1, env->xregs[30]);
-                    fflush(wlog);
-                    #undef RD32
+                bool isnew = true;
+                for (int k = 0; k < seen_n; k++) {
+                    if (seen[k] == upc) { isnew = false; break; }
                 }
-                wl++;
+                if (isnew && seen_n < 8192) {
+                    seen[seen_n++] = upc;
+                    /* env->pc points at the RET after the svc; real svc = upc-4.
+                     * Dump an 8-word window (upc-16..upc+12) so the site can be
+                     * uniquely located in a binary, plus decode the svc imm. */
+                    uint32_t w[8] = {0};
+                    for (int k = 0; k < 8; k++) {
+                        uint64_t ia = upc - 16 + k * 4;
+                        GetPhysAddrResult r = {};
+                        ARMMMUFaultInfo fi = {};
+                        if (!get_phys_addr(env, ia, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &r, &fi))
+                            address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &w[k], 4);
+                    }
+                    uint32_t svc_insn = w[3]; /* upc-4 */
+                    int svc_imm = ((svc_insn & 0xffe0001fu) == 0xd4000001u)
+                                  ? (int)((svc_insn >> 5) & 0xffff) : -1;
+                    /* posix_spawn(194): path=x1; execve(59): path=x0. Read it. */
+                    char sp_path[256] = {0};
+                    if (svc_imm == 194 || svc_imm == 59) {
+                        uint64_t pp = (svc_imm == 194) ? a1 : a0;
+                        if (pp >= 0x1000) {
+                            for (int q = 0; q < 255; q++) {
+                                GetPhysAddrResult pr = {};
+                                ARMMMUFaultInfo pf = {};
+                                if (get_phys_addr(env, pp + q, MMU_DATA_LOAD, 0, ARMMMUIdx_Stage1_E0, &pr, &pf)) break;
+                                char c = 0;
+                                address_space_read(cs->as, pr.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &c, 1);
+                                if (!c) break;
+                                sp_path[q] = (c >= 0x20 && c < 0x7f) ? c : '.';
+                            }
+                        }
+                    }
+                    if (etr) {
+                        fprintf(etr, "svc@0x%09" PRIx64 " imm=%d x0=0x%" PRIx64 " x1=0x%" PRIx64 " x16=0x%" PRIx64 " lr=0x%" PRIx64 " path=\"%s\"\n",
+                                upc - 4, svc_imm, a0, a1, x16_raw, env->xregs[30], sp_path);
+                        fflush(etr);
+                    }
+                }
             }
 
             /* vresearch101: class-agnostic spawn/exec tracer. The class decode
