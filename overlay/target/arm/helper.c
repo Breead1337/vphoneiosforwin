@@ -9412,6 +9412,31 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
         genter = true;
         /* SPTM's GXF entry picks the gate from ESR_GL1[4:0] (GENTER #imm): 0 = dispatch, 4 = ..., so set it */
         env->gxf.esr_gl[new_el] = env->exception.syndrome;
+        /* vresearch101: ordered log of every DISTINCT GENTER target (pc + x16
+         * PAC stripped) to see the full secure-init progression and the last new
+         * secure op before it drops into steady-state repetition. */
+        {
+            static uint64_t gseen[2048];
+            static int gseen_n = 0;
+            static FILE *gf = NULL;
+            static bool gf_init = false;
+            if (!gf_init) { gf_init = true;
+                gf = fopen("/home/ard/vrwork/genterseq.log", "w");
+                if (!gf) gf = fopen("genterseq.log", "w"); }
+            uint64_t x16m = env->xregs[16] & 0x0000ffffffffffffULL;
+            uint64_t key = (env->pc << 1) ^ x16m ^ (from_gl ? 1 : 0);
+            bool gnew = true;
+            for (int i = 0; i < gseen_n; i++) if (gseen[i] == key) { gnew = false; break; }
+            if (gnew && gseen_n < 2048) {
+                gseen[gseen_n++] = key;
+                if (gf) {
+                    fprintf(gf, "#%d %spc=0x%" PRIx64 " x16=0x%" PRIx64 " (t=0x%" PRIx64 ") x0=0x%" PRIx64 " lr=0x%" PRIx64 "\n",
+                            gseen_n, from_gl ? "[GL]" : "", env->pc, env->xregs[16], x16m,
+                            env->xregs[0], env->xregs[30]);
+                    fflush(gf);
+                }
+            }
+        }
         /* vresearch101 debug: XNU -> SPTM/TXM calls (x16 = dispatch target) */
         if (!from_gl && qemu_loglevel_mask(LOG_GUEST_ERROR)) {
             static struct { uint64_t pc; uint64_t x16; int count; } sites[64];
