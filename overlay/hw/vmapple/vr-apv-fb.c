@@ -488,17 +488,21 @@ static const MemoryRegionOps gfx_ops = {
 /*  Display update & Animation                                              */
 /* ======================================================================== */
 
-static inline void untile_8x8(const uint32_t *src, uint32_t *dst, int w, int h)
+static inline void untile_metal_16x16(const uint32_t *src, uint32_t *dst, int w, int h)
 {
-    int tiles_x = w / 8;
-    int tiles_y = h / 8;
+    int tiles_x = w / 16;
+    int tiles_y = h / 16;
     int idx = 0;
     for (int ty = 0; ty < tiles_y; ty++) {
         for (int tx = 0; tx < tiles_x; tx++) {
-            for (int i = 0; i < 64; i++) {
-                int lx = (i & 1) | ((i >> 1) & 2) | ((i >> 2) & 4);
-                int ly = ((i >> 1) & 1) | ((i >> 2) & 2) | ((i >> 3) & 4);
-                dst[(ty * 8 + ly) * w + (tx * 8 + lx)] = src[idx++];
+            for (int i = 0; i < 256; i++) {
+                int ly = (i & 1) | ((i >> 1) & 2) | ((i >> 2) & 4) | ((i >> 3) & 8);
+                int lx = ((i >> 1) & 1) | ((i >> 2) & 2) | ((i >> 3) & 4) | ((i >> 4) & 8);
+                if ((ty * 16 + ly) < h && (tx * 16 + lx) < w) {
+                    dst[(ty * 16 + ly) * w + (tx * 16 + lx)] = src[idx++];
+                } else {
+                    idx++;
+                }
             }
         }
     }
@@ -538,8 +542,8 @@ static void apv_fb_update(void *opaque)
     uint32_t stride = s->stride ? s->stride : (s->width * 4);
     size_t fb_size = (size_t)s->height * stride;
 
+    static uint32_t raw_vram[1024 * 1024];
     if (pbase >= 0x70000000ULL && fb_size > 0 && fb_size <= 64 * 1024 * 1024) {
-        static uint32_t raw_vram[1024 * 1024];
         cpu_physical_memory_read(pbase, raw_vram, (size_t)s->width * s->height * 4);
 
         /* Check for non-zero guest pixels */
@@ -555,7 +559,7 @@ static void apv_fb_update(void *opaque)
 
         if (has_guest_content) {
             uint32_t *dst = (uint32_t *)surface_data(surface);
-            untile_8x8(raw_vram, dst, s->width, s->height);
+            untile_metal_16x16(raw_vram, dst, s->width, s->height);
         }
     }
 
@@ -571,6 +575,12 @@ static void apv_fb_update(void *opaque)
         int64_t now_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
         if (now_ms - last_ppm_save > 5000) {
             last_ppm_save = now_ms;
+            /* Save raw guest VRAM dump */
+            FILE *fraw = fopen("/home/ard/vrwork/raw_vram.bin", "wb");
+            if (fraw) {
+                fwrite(raw_vram, 4, (size_t)s->width * s->height, fraw);
+                fclose(fraw);
+            }
             FILE *fppm = fopen("/home/ard/vrwork/framebuffer.ppm", "wb");
             if (fppm) {
                 uint8_t *dst = (uint8_t *)surface_data(surface);
