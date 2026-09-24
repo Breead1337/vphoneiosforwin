@@ -2070,3 +2070,16 @@ com.apple.xpc.launchd: hello, launchd UUID … / Darwin Bootstrapper 7.0.0 / ent
 **🔴 НОВАЯ СТЕНА — child-процесс не получает shared cache:** launchd `posix_spawn` boot-таска fsck; дочерний процесс (ASLR base 0x103xxx ≠ launchd 0x243xxx) → `dyld[1]: out of range bind ordinal 15059600 (max 0)` → краш. Только 1 процесс смаппил кэш (launchd, .01×1); у дочернего `max 0` = кэш НЕ подгрузился. Это тот самый recurring wall (был `8493180 (max 0)` в cloudOS-заметках). Гипотезы: (1) shared region не наследуется/не шарится spawned-детям в нашей эмуляции; (2) cdhash fsck/re-регистрация кэша для нового процесса. Next: почему дочерний dyld видит 0 образов — реверс shared_region attach в дочернем процессе, либо cdhash fsck в TC. Это, вероятно, ключ к массовому запуску сервисов (и «медленности»).
 
 Инструменты: resign_dyld.py (обобщён, мульти-патч + re-sign страниц), resign_apply2.sh, cd_parse.py, check_v4.sh, probe_bind.sh.
+
+## Обновление 24.09 (83) — расследование child-cache стены: глубокий exec/page фронтир
+
+Диагностика стены «spawned-child dyld: out of range bind ordinal (max 0)» (fsck, первый posix_spawn'нутый boot-таск):
+- **decmpfs-порча ИСКЛЮЧЕНА:** /sbin/fsck на диске = валидный Mach-O (magic feedfacf), без decmpfs-xattr. launchd/dyld/xpcproxy тоже валидны (check_decmpfs.sh).
+- **Доверие ИСКЛЮЧЕНО:** cdhash fsck (4f852d78…) И xpcproxy (719d3945…) — ОБА в merged4 (probe_fsck_cdhash.sh). Не отказ подписи.
+- **shared_region_map_and_slide_np (438) = 0 вызовов** во всём boot'е; launchd мапит кэш через новый вариант (syscall 0x1b8/0x1be, iOS 26). shared_region_check (294) зовёт только launchd.
+- **Ребёнок (0x103xxx) крашится ДО shared_region_check** — всего 4 syscall'а (host_self, open /dev/console, write ошибки, close). Значит крашится на РАННЕМ этапе dyld, применяя chained-fixup'ы своего ГЛАВНОГО бинаря (fsck), прочитанные как мусор → import table = 0 (max 0) + garbage ordinal.
+- **Вывод:** страницы `__LINKEDIT` исполняемого файла spawned-ребёнка = мусор В РАНТАЙМЕ, хотя файл на диске валиден. launchd (kernel-exec) читается верно; fsck (posix_spawn) — нет. Разница — **механизм exec для детей** (guest XNU load_machfile/vm_fault для posix_spawn), НЕ файл/подпись/данные. Эмулятор Apple shared region не спец-обрабатывает (commpage-строка в helper.c = generic ARM, не Apple-dyld).
+
+**СЛЕД. ФРОНТИР (глубокий, отдельный заход):** почему posix_spawn'нутый ребёнок получает мусорные/нулевые страницы __LINKEDIT. Гипотезы: (1) наш cs_invalid_page→0 обход принимает НЕ-подкачанные (нулевые) страницы для детей (launchd faultится иначе); (2) guest exec/pager для posix_spawn читает не тот offset. Реверс guest vm_fault/cs_validate_page + load_machfile для детей. Это recurring wall (был в cloudOS mount-phase-2). Инструменты: probe_child.sh, probe_bind.sh, probe_fsck_cdhash.sh, probe_sharedregion.sh, check_decmpfs.sh.
+
+**ГЛАВНОЕ: за сессию прошли ~10 стен — от «no dyld cache» до ignition-complete + launchd гонит boot-таски (глубже, чем когда-либо).** Техники: полный кэш+cdhash в TC, 6-томный контейнер, патч dyld+re-sign CodeDirectory. Коммиты d252a80…(эта).
