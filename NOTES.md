@@ -2002,3 +2002,15 @@ Traced-прогоны T=500/900 на root2.big.img (svc.log, VR_SVCLOG=1) док
 **СЛЕД. СТЕНА:** launchd НЕ доходит до спавна сервисов — в трейсе нет ни одного LaunchDaemon `.plist`, только stdio/console. Вероятные причины: (1) провал libignition preboot-mount — `DT_get_fstab_entries: failed to get volume for role: 256` (0x100=Update) → `failed to get preboot mount point: 2`; в нашем 2-томном контейнере (Preboot 0x10 + System 0x1) нет тома role-Update; возможно, гейтит нормальную загрузку daemon'ов. (2) крайняя медленность TCG (каждый процесс заново мапит 5.6ГБ; shared region не шарится?). Next: (a) добить libignition preboot (dtpatch fstab role-256 ИЛИ хук DT_get_fstab_entries), (b) дать очень большой T и проверить, доходит ли до LaunchDaemons/SpringBoard, (c) profile: почему кэш не шарится между процессами.
 
 **Инструменты сессии:** dsc_cdhashes.py, build_dsc_tc.py, apply_dsc_tc.sh, build_big_hybrid.sh, boot_big.sh, analyze_svc.sh, svc_paths.sh, svc_procs.sh. Гейт svc-трейсера: VR_SVCLOG (helper.c).
+
+## Обновление 24.09 (78) — КОРЕНЬ петли launchd: fstab требует 6 томов, у нас 2
+
+svc-трейс (svc_launchd_seq.sh) показал: после dyld launchd открывает /dev/null×3, /dev/console и **заново пишет весь дамп libignition** (2 полных прогона ignition за 15 мин, не тугая петля — каждая итерация ~7 мин из-за dyld). Т.е. launchd повторяет ignition, т.к. libignition падает на preboot-mount.
+
+**Корень (dt_fstab.py разобрал DeviceTree /filesystems/fstab, os_env_type=1):** нормальный boot требует **6 томов по ролям**: System 0x1 (/), Preboot 0x10 (/private/preboot), Data 0x40 (/private/var), Update 0xc0 (/private/var/MobileSoftwareUpdate), **xART 0x100=256 (/private/xarts)**, Hardware 0x140 (/private/var/hardware). А наш контейнер = только 2 тома (Preboot+System). Поэтому `DT_get_fstab_entries: failed to get volume for role: 256` (=**xART**, ядерная ф-я, KC off 6415925) → preboot mount падает → launchd повторяет ignition бесконечно, до спавна сервисов не доходит.
+
+**Два пути фикса:**
+- (A) Пересобрать контейнер с 6 томами (расширить apfsprogs_multivol.py на роли Data/Update/xART/Hardware; пустые) — ПРАВИЛЬНО (даёт и Data=/private/var, который launchd/сервисам НУЖЕН), но большой rebuild + ручная APFS-раскладка.
+- (B) Урезать DeviceTree fstab до System+Preboot (dtpatch, убрать xART/Data/Update/Hardware ноды) — ленивее/быстрее; /private/var останется каталогом на System (у нас RW). Пробую (B) первым.
+
+**Оценка до SpringBoard:** самое трудное (secure-world) позади. Осталось: fstab/тома → launchd спавнит демоны → backboardd → SpringBoard → графика (vr-apv-fb). ГЛАВНЫЙ long-pole — СКОРОСТЬ: каждый процесс мапит 5.6ГБ кэша ~7мин в TCG; если не шарится shared region — полный буст = часы. До первого кадра SpringBoard: несколько подходов, не один прогон.
