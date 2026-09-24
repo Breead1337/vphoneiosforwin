@@ -17,12 +17,13 @@ def edit(name, pairs):
 
 edit("mkapfs.h", [
     ("#define FIRST_VOL_BNO\t\t\t(CPOINT_END + 2)",
-     "#define NVOLS\t\t\t\t2\n"
-     "#define VOL_BASE(i)\t\t\t((i) ? CPOINT_END + 10 : CPOINT_END + 2)\n"
-     "#define VOL_OID(i)\t\t\t((i) ? APFS_OID_RESERVED_COUNT + 50 : FIRST_VOL_OID)\n"
-     "#define VOL_CAT_ROOT_OID(i)\t\t((i) ? APFS_OID_RESERVED_COUNT + 51 : FIRST_VOL_CAT_ROOT_OID)\n"
+     "#define NVOLS\t\t\t\t6\n"
+     "#define VOL_BASE(i)\t\t\t(CPOINT_END + 2 + 8 * (i))\n"
+     "#define VOL_OID(i)\t\t\t((i) ? APFS_OID_RESERVED_COUNT + 50 + ((i) - 1) * 2 : FIRST_VOL_OID)\n"
+     "#define VOL_CAT_ROOT_OID(i)\t\t((i) ? APFS_OID_RESERVED_COUNT + 51 + ((i) - 1) * 2 : FIRST_VOL_CAT_ROOT_OID)\n"
      "#define FIRST_VOL_BNO\t\t\t(CPOINT_END + 2)"),
-    ("#define IP_BMAP_BASE\t\t\t(CPOINT_END + 10)", "#define IP_BMAP_BASE\t\t\t(CPOINT_END + 16)"),
+    # each vol uses 6 blocks at stride 8; 6 vols end at CPOINT_END+47, so IP bitmap starts at +50
+    ("#define IP_BMAP_BASE\t\t\t(CPOINT_END + 10)", "#define IP_BMAP_BASE\t\t\t(CPOINT_END + 50)"),
 ])
 
 edit("btree.h", [("extern void make_omap_btree(u64 bno, bool is_vol);",
@@ -92,10 +93,14 @@ edit("super.c", [
     ("static void make_volume(u64 bno, u64 oid)\n{",
      "static void make_volume(int vol)\n{\n\tu64 bno = VOL_BASE(vol), oid = VOL_OID(vol);"),
     ("strcpy((char *)vsb->apfs_volname, param->label);",
-     "strcpy((char *)vsb->apfs_volname, vol ? \"System\" : param->label);\n"
+     "{\n"
+     "\tstatic const char *const vr_vol_names[6] = {0, \"System\", \"Data\", \"Update\", \"xART\", \"Hardware\"};\n"
+     "\tstatic const u16 vr_vol_roles[6] = {0x10 /*Preboot*/, 0x1 /*System*/, 0x40 /*Data*/, 0xc0 /*Update*/, 0x100 /*xART*/, 0x140 /*Hardware*/};\n"
+     "\tstrcpy((char *)vsb->apfs_volname, vol ? vr_vol_names[vol] : param->label);\n"
      "\tvsb->apfs_fs_index = cpu_to_le32(vol);\n"
-     "\tvsb->apfs_role = cpu_to_le16(vol ? 0x1 /* System */ : 0x10 /* Preboot */);\n"
-     "\tif (vol)\n\t\tvsb->apfs_vol_uuid[0] ^= 0x55;"),
+     "\tvsb->apfs_role = cpu_to_le16(vr_vol_roles[vol]);\n"
+     "\tvsb->apfs_vol_uuid[0] ^= (0x55 * vol);\n"
+     "\t}"),
     ("""	vsb->apfs_omap_oid = cpu_to_le64(FIRST_VOL_OMAP_BNO);
 	make_omap_btree(FIRST_VOL_OMAP_BNO, true /* is_vol */);
 	vsb->apfs_root_tree_oid = cpu_to_le64(FIRST_VOL_CAT_ROOT_OID);
