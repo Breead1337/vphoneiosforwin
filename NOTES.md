@@ -2028,3 +2028,14 @@ svc-трейс (svc_launchd_seq.sh) показал: после dyld launchd от
 **cryptex1 sniff = graft OS-cryptex1.** libignition после mount preboot ищет cryptex1-директорию (строки: `cryptex1/current`, `__cryptex1_sniff_fire`, `__cryptex1_sniff_payload_check`, `failed to stat cryptex1 canary`) в /private/preboot и падает (err 8), т.к. cryptex не grafted. Кэш dyld у нас на классическом пути (не через cryptex), но libignition ВСЁ РАВНО требует cryptex1-graft. **Next:** реверс cryptex1-sniff в libignition (в /usr/lib/dyld) → либо создать минимальную cryptex1-структуру в preboot (`current` симлинк + canary + graft point с контентом → путь «cryptex content already available, ignored error»), либо застабить sniff. Это территория cryptex-graft (глубокий фронтир). libignition = userspace (в dyld), VR_*-хук не подходит — патчить бинарь dyld на диске ИЛИ подсунуть файлы.
 
 Тулы: rebuild_6vol.sh, check_6vol_boot.sh, spawn_and_cryptex.sh, dt_fstab.py, role_check.py.
+
+## Обновление 24.09 (80) — cryptex1 sniff охарактеризован: падает stat() canary в /usr/lib/dyld
+
+capstone-дизасм (`cryptex1_disasm.py`) нашёл место: cryptex1-sniff в `/usr/lib/dyld` статит canary-файл, stat падает → лог `failed to stat cryptex1 canary: %d` @ dyld 0x7ef00 (str vm 0x9afae). Есть также `failed to open covered graft point` @0x7e6a8. Путь canary — вероятно `/private/preboot/cryptex1/current` (строка `cryptex1/current` в dyld). Итог: libignition после mount preboot ищет cryptex1-структуру (canary/current) в /private/preboot (=том Preboot vol0), не находит → `ignition failed: 8` → launchd повторяет ignition.
+
+**Пути фикса (cryptex-graft фронтир):**
+- (1) Создать минимальную cryptex1-структуру в Preboot (vol0): `/cryptex1/current` (→ AssetsV2/<UUID>) + canary + graft-point контент → чтобы stat прошёл и sniff взял путь «content already available / ignored error». Нужно точно понять, что sniff проверяет после stat (open covered graft point, payload_check) — доп. реверс trace аргумента stat.
+- (2) Пропатчить dyld на диске (обнулить/скипнуть cryptex1_sniff, вернуть 0) → но dyld adhoc-подписан, cdhash в TC → пересчитать cdhash пропатченного dyld и добавить в merged2/StaticTrustCache (как для кэша). VR_*-хук НЕ подходит (userspace).
+- capstone 5.0.7 + objdump в WSL готовы для дальнейшего реверса.
+
+Инструменты: cryptex1_disasm.py, run_cryptex1_disasm.sh, cryptex1_recon.sh.
