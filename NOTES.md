@@ -2103,3 +2103,13 @@ com.apple.xpc.launchd: hello, launchd UUID … / Darwin Bootstrapper 7.0.0 / ent
 **ВЫВОД:** launchd использует systemwide (0x63c94) и должен (создаёт регион); дети используют systemwide→attach→ПУСТОЙ регион→крашились. Фикс детей = private. Нужен ИЗБИРАТЕЛЬНЫЙ: launchd systemwide, дети private. Варианты: (а) патч 0x63c94: детектить пустой attached-регион → fallback на private (только дети); (б) PID-условный (PID1=systemwide, иначе private) — нужен code-stub getpid; (в) kernel-фикс (сделать регион launchd видимым детям). 0x63c94 И 0x62c10 оба зовут саб-мапперы 0x64144/0x64304 → у 0x63c94 есть create(file-map, launchd) и attach(empty, дети) пути. Next: реверс 0x63c94 create-vs-attach.
 
 Прогон отката к рабочему launchd: dyld_v4 (только 0x7d98c) + merged4. dyld_v5 = 0x7d98c+0x63c94, merged5, cdhash cdf23e55.
+
+## Обновление 24.09 (86) — PID-условный трамплин: launchd systemwide + дети private
+
+Избирательный фикс (dyld_v6, resign_apply4.sh): вместо слепого redirect — трамплин на входе systemwide-функции.
+- code-cave найден на 0x51a8 (60Б нулей, inter-function padding в __text; find_cave.py).
+- `0x63c94: b 0x51a8`; стаб: `stp x0,x1,[sp,#-16]!; movz x16,#20; svc #0x80 (getpid); cmp x0,#1; ldp x0,x1,[sp],#16; b.ne 0x62c10 (дети→private); pacibsp; b 0x63c98 (launchd→systemwide)`.
+- ⚠️ Первый расчёт offset'ов веток был НЕВЕРЕН (0x63c94→0x51ca8, b.ne→0x16c10) — поймал через capstone-верификацию ДО буста. br_enc.py считает точно: 0x63c94=4585fe17, STUB=e007bfa9900280d2011000d41f0400f1e007c1a8a1d22e547f2303d5b57a0114. verify_v6.py подтвердил корректный дизасм.
+- Re-sign страниц 5/99/125, cdhash 7a8d0b47, merged6.
+
+Логика: launchd (PID1) → systemwide (создаёт shareable регион для XPC/boot-tasks, как в v4); дети (PID>1) → private (мапят кэш из файла, как в v5, без out-of-range-bind). Прогон T=1200 VR_SVCLOG=1 TC=merged6. Ожидание: launchd доходит до ondemand+boot-tasks И fsck работает → барьер пробит. Результат — в след. заметке.
