@@ -46,32 +46,46 @@ for t in targets:
 
 taddr, tsize, toff = text_sec
 code = d[toff:toff+tsize]
-# scan ADRP (+ADD) building targets
-xrefs = {}   # str_vm -> list of code vmaddr
-for off in range(0, len(code)-8, 4):
+# scan ADRP then a later ADD to the same register (not necessarily adjacent)
+xrefs = {}   # str_vm -> list of adrp code vmaddr
+reg_page = {}   # rd -> (page, adrp_pc)
+for off in range(0, len(code)-4, 4):
     w = struct.unpack_from("<I", code, off)[0]
+    pc = taddr + off
     if (w & 0x9f000000) == 0x90000000:  # ADRP
         rd = w & 0x1f
         immlo = (w >> 29) & 3
         immhi = (w >> 5) & 0x7ffff
-        imm = ((immhi << 2) | immlo)
+        imm = (immhi << 2) | immlo
         if imm & (1 << 20): imm -= (1 << 21)
-        pc = taddr + off
         page = (pc & ~0xfff) + (imm << 12)
-        w2 = struct.unpack_from("<I", code, off+4)[0]
-        if (w2 & 0x7f800000) == 0x11000000 and ((w2 >> 5) & 0x1f) == rd:  # ADD imm, from rd
-            add_imm = (w2 >> 10) & 0xfff
+        reg_page[rd] = (page, pc)
+    elif (w & 0x7f800000) == 0x11000000:  # ADD (immediate)
+        rd = w & 0x1f
+        rn = (w >> 5) & 0x1f
+        if rn in reg_page:
+            page, adrp_pc = reg_page[rn]
+            add_imm = (w >> 10) & 0xfff
+            if w & (1 << 22): add_imm <<= 12
             tgt = page + add_imm
             for sv in str_vms.values():
                 if sv is not None and tgt == sv:
-                    xrefs.setdefault(sv, []).append(pc)
+                    xrefs.setdefault(sv, []).append(adrp_pc)
 
 md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
 inv = {v: k for k, v in str_vms.items()}
+focus = sys.argv[2].encode() if len(sys.argv) > 2 else b"detecting cryptex1 directory"
 for sv, pcs in xrefs.items():
+    if inv.get(sv) != focus:
+        continue
     for pc in pcs:
         print("\n==== xref to %r @ 0x%x ====" % (inv.get(sv, b"?").decode(), pc))
-        start = pc - taddr - 40
-        for ins in md.disasm(code[start:start+140], taddr + start):
-            mark = "  <=" if ins.address == pc else ""
+        start = max(0, pc - taddr - 16)
+        for ins in md.disasm(code[start:start+400], taddr + start):
+            mark = "  <=STR" if ins.address == pc else ""
+            # flag immediates of 8 (the ignition error code) and returns
+            if ins.mnemonic in ("mov", "movz", "orr") and "#8" in ins.op_str.split(",")[-1].strip():
+                mark += "   [#8]"
+            if ins.mnemonic in ("ret", "retab"):
+                mark += "   [RET]"
             print("  0x%x: %-8s %s%s" % (ins.address, ins.mnemonic, ins.op_str, mark))
