@@ -1944,3 +1944,19 @@ libSystem и все системные dylib в iOS 26 — в **dyld shared cach
 **Стены hybrid — статус:** root-hash ✓ · AMFI CoreTrust ✓ · **TXM ✓** · dyld shared cache 🔴 (Cryptex) · далее: launchd main → backboardd/SpringBoard → графика (vr-apv-fb). Version-mismatch 26.1/26.4 — риск.
 
 **Тулы:** `build_static_tc.py`, `inject_static_tc.sh`, `copy_static_tc.sh`, `inspect_preboot_tc.sh`. helper.c: genterseq теперь пишет enter[el]/vbar_gl (карта secure-мира).
+
+## Обновление 24.09 (73) — dyld shared cache найден в Cryptex; блокер = размер образа + graft
+
+После пробития TXM launchd грузится, но dyld не находит `libSystem.B.dylib` («no dyld cache»). Кэш — в **OS Cryptex** (`043-54303-126.dmg.aea`, IPSW). Разведка:
+- Извлёк из IPSW + расшифровал `043-54303-126.dmg.aea` → `043-54303-126.dmg` (4.95ГБ, raw APFS, NXSB@0x20, mount offset **0** vol=0). Тул: `ipsw.exe fw aea -o //wsl.localhost/Debian/... <aea>` (ключ онлайн).
+- **dyld shared cache внутри Cryptex:** `System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e` + `.01`…`.26` (~**5.7ГБ**, split). Cryptex также содержит System/usr (системные dylib/фреймворки).
+- Cryptex монтируется в **`/private/preboot/Cryptexes/OS`** (симлинк `/System/Cryptexes/OS` → туда). В rootfs этот путь ПУСТ (Cryptex не grafted); `/System/Library/Caches/com.apple.dyld` в rootfs НЕТ; `/usr/lib/dyld` есть, libSystem нет (он в кэше).
+
+**🔴 БЛОКЕР:** rootfs vol=1 = **86% занят (14G/16G, свободно 2.4ГБ)** — кэш 5.7ГБ НЕ ВЛЕЗАЕТ. Нужно:
+1. **Образ БОЛЬШЕ** (пересобрать root2.hybrid.img, напр. 28–32ГБ: OS DMG + Cryptex-контент). Тул populate_hybrid.sh расширить.
+2. Разместить кэш в `/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/` (проверить, найдёт ли dyld без реального graft — вероятно да, если файлы по правильному пути; graft Cryptex делает ядро при boot по root_hash+trustcache, у нас его нет — возможно, придётся эмулировать graft ИЛИ хватит файлов).
+3. **Риск version-mismatch:** кэш/dyld iPhone-OS **26.1** под ядром vresearch101 **26.4**. dyld может отвергнуть кэш по OS-version/platform. Рецепт использует **vphone600 KC** (matched к iPhone-OS) именно поэтому — но переход на vphone600 KC инвалидирует ВСЕ наши VR_*-хуки (большая переделка). Сначала проверить, примет ли 26.4-ядро 26.1-кэш; если нет — развилка (vphone600 KC vs искать 26.4 iPhone-OS).
+
+**Материал готов (не в git):** `~/vrwork/cryptex/043-54303-126.dmg` (расшифрован, 4.95ГБ, кэш внутри). Тулы разведки закоммичены: explore_cryptex.sh, find_cryptex_cache.sh, mount_cryptex_dbg.sh, inspect_rootfs_dyld.sh, check_rootfs_space.sh.
+
+**Стены hybrid — статус:** root-hash ✓ · AMFI ✓ · TXM ✓ · dyld shared cache 🔴 (нужен bigger образ + Cryptex + version-check) · далее launchd main → backboardd/SpringBoard → графика.
