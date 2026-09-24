@@ -2093,3 +2093,13 @@ com.apple.xpc.launchd: hello, launchd UUID … / Darwin Bootstrapper 7.0.0 / ent
 - ⚠️ Цена: каждый процесс мапит 5.6ГБ (~7мин TCG) — медленно, но если работает — дети идут, каскад к backboardd/SpringBoard. Прогон: `T=1200 VR_SVCLOG=1 TC=merged5 boot_big.sh`. Ключевой сигнал: fsck ОТКРЫВАЕТ .00-.79 вместо мгновенного `out of range bind`.
 
 Инструменты реверса: dyld_callers.py, dyld_funcref.py, dyld_strxref.py, find_dyld_srcheck.py, dump_dsr_strings.py, parse_kc_symbols.py, kc_structure.py, kc_syms2.py, resign_apply3.sh (dyld_v5). Результат — в след. заметке.
+
+## Обновление 24.09 (85) — redirect УСТРАНИЛ краш детей (кэш мапится!), но сломал launchd → нужен избирательный фикс
+
+**dyld_v5 (0x63c94 systemwide → b 0x62c10 private) — результат boot_v5:**
+- ✅ **`out of range bind` = 0** (было — краш каждого ребёнка). Ребёнок теперь ОТКРЫВАЕТ сабкэши .00→.79 и мапит кэш приватно из файла (виден close-loop fd 0x3f-0x52 после маппинга). **Механизм фикса детей ПОДТВЕРЖДЁН: private-маппинг решает проблему детей.**
+- ❌ **launchd РЕГРЕССИРОВАЛ:** `entering ondemand` = 0 (в v4 было), краш (Corefile) сразу после `ignition sequence complete`, ДО XPC-bootstrap. Значит launchd вызывает 0x63c94 (systemwide) и НУЖДАЕТСЯ в нём (создать общий регион для XPC/boot-tasks). Слепой redirect (private для ВСЕХ) сломал launchd.
+
+**ВЫВОД:** launchd использует systemwide (0x63c94) и должен (создаёт регион); дети используют systemwide→attach→ПУСТОЙ регион→крашились. Фикс детей = private. Нужен ИЗБИРАТЕЛЬНЫЙ: launchd systemwide, дети private. Варианты: (а) патч 0x63c94: детектить пустой attached-регион → fallback на private (только дети); (б) PID-условный (PID1=systemwide, иначе private) — нужен code-stub getpid; (в) kernel-фикс (сделать регион launchd видимым детям). 0x63c94 И 0x62c10 оба зовут саб-мапперы 0x64144/0x64304 → у 0x63c94 есть create(file-map, launchd) и attach(empty, дети) пути. Next: реверс 0x63c94 create-vs-attach.
+
+Прогон отката к рабочему launchd: dyld_v4 (только 0x7d98c) + merged4. dyld_v5 = 0x7d98c+0x63c94, merged5, cdhash cdf23e55.
