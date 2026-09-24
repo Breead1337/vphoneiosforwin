@@ -2051,3 +2051,22 @@ capstone-дизасм (`cryptex1_disasm.py`) нашёл место: cryptex1-sni
 **✅ RE-SIGN (resign_dyld.py):** после патча байта пересчитать SHA256 страницы 126 → записать в code-slot CodeDirectory (@file 0x131696) → пересчитать cdhash (old 32b50618 → new d689d37f). Добавить новый cdhash в trust cache (merged3 = merged2+1 = 3815) + пересобрать/переинжектить StaticTrustCache. dyld: hashType2/SHA256, pageSize4096, 305 code-slots, codeLimit 0x130600. Инструменты: cd_parse.py, resign_dyld.py, resign_apply.sh, restore_dyld.sh, patch_dyld_cryptex.py, stage_cryptex1*.sh.
 
 Прогон: `TC=merged3 ROOT2=root2.big.img VR_SVCLOG=1 boot_big.sh`. Проверяю, проходит ли теперь graft и продолжается ли ignition (результат в след. заметке).
+
+## Обновление 24.09 (82) — 🎉 IGNITION ЗАВЕРШЕНА, launchd XPC-bootstrap гонит boot-таски
+
+**Патч graft-стадии сработал.** Вместо 0x7e1a8 — правка `0x7d98c: tbz w8,#0 (optional-флаг) → NOP` (resign_apply2.sh, dyld_v4, cdhash 0b868f23, merged4). Теперь ЛЮБОЙ провал графта = optional/continuing:
+```
+graft: failed to graft optional cryptex: os, continuing: 2
+livefs boot; skipping app cryptex
+graft: failed to graft optional cryptex: app, continuing: 2
+select os cryptex path: cryptex graft point not present; not using fallback
+dylib_cache: opened shared cache directory: /System/Library/Caches/com.apple.dyld   ← НАШ кэш найден
+goodbye: ignition sequence complete                                                  ← ✅ IGNITION DONE
+com.apple.xpc.launchd: hello, launchd UUID … / Darwin Bootstrapper 7.0.0 / entering ondemand mode
+(exclaves-boot) Doing boot task / (fsck) Doing boot task                              ← launchd гонит boot-таски!
+```
+Это ГЛУБЖЕ, чем когда-либо: ignition полностью прошла, launchd XPC-bootstrap (libxpc 3089.42.1) в ondemand-режиме исполняет boot-таски.
+
+**🔴 НОВАЯ СТЕНА — child-процесс не получает shared cache:** launchd `posix_spawn` boot-таска fsck; дочерний процесс (ASLR base 0x103xxx ≠ launchd 0x243xxx) → `dyld[1]: out of range bind ordinal 15059600 (max 0)` → краш. Только 1 процесс смаппил кэш (launchd, .01×1); у дочернего `max 0` = кэш НЕ подгрузился. Это тот самый recurring wall (был `8493180 (max 0)` в cloudOS-заметках). Гипотезы: (1) shared region не наследуется/не шарится spawned-детям в нашей эмуляции; (2) cdhash fsck/re-регистрация кэша для нового процесса. Next: почему дочерний dyld видит 0 образов — реверс shared_region attach в дочернем процессе, либо cdhash fsck в TC. Это, вероятно, ключ к массовому запуску сервисов (и «медленности»).
+
+Инструменты: resign_dyld.py (обобщён, мульти-патч + re-sign страниц), resign_apply2.sh, cd_parse.py, check_v4.sh, probe_bind.sh.
