@@ -1990,3 +1990,15 @@ libSystem и все системные dylib в iOS 26 — в **dyld shared cach
 - **Ограничение: медленно.** Прогон упал по T=300, dyld был на сабкэше .15 из ~80 — не застрял, просто TCG постранично + ВСЕГДА-ВКЛ svc-трейсер (16 MMU-walk + fprintf на КАЖДЫЙ userspace-SVC) тормозят.
 - **Оптимизация:** гейтнул svc.log за `VR_SVCLOG` (overlay/target/arm/helper.c) — по умолчанию OFF, история всё равно видна через kprintf/console. Пересобрал qemu (incremental). Дальше — длинный прогон без VR_SVCLOG.
 - **Next:** boot с большим T без VR_SVCLOG → дать dyld домапить 80 сабкэшей + связать launchd → launchd main → следующая стена (backboardd/SpringBoard/графика). libignition preboot-mount по-прежнему падает (role 256), но не фатально.
+
+## Обновление 24.09 (77) — 🎯 launchd main РАБОТАЕТ в userspace (dyld-барьер пройден полностью)
+
+Traced-прогоны T=500/900 на root2.big.img (svc.log, VR_SVCLOG=1) доказали:
+- **dyld мапит ВЕСЬ кэш** — EL0-трейс = чёткий прогрессирующий цикл по сабкэшам .00→.79 (open fd 0x4a→0x50, map, munmap temp, следующий). НЕ петля. Просто медленно в TCG (~500с только кэш). [Прошлый вывод «стоп на .15» ОШИБОЧЕН — гистограмма SVC не мера прогресса.]
+- **launchd (PID 1) вошёл в main:** `[SVC-GL UNIX 7 (wait4)] s2="/sbin/launchd"`; открыл `/dev/null`×3 (stdin/out/err), `/dev/console`×2, `/`, `/System/Library/Caches/com.apple.dyld/`; вошёл в run-loop с многократным wait4 (ждёт детей). Паник/EL0-фолтов НЕТ.
+- **Только 1 старт процесса** (сабкэш .01 открыт 1×) — не re-exec-петля; launchd мапит кэш единожды.
+- Гистограмма T=900: 57280 SVC / 27594 GENTER / 68 DA / 21 PA — сходится к ~57k (после dyld+launchd активность низкая = launchd idle-ждёт).
+
+**СЛЕД. СТЕНА:** launchd НЕ доходит до спавна сервисов — в трейсе нет ни одного LaunchDaemon `.plist`, только stdio/console. Вероятные причины: (1) провал libignition preboot-mount — `DT_get_fstab_entries: failed to get volume for role: 256` (0x100=Update) → `failed to get preboot mount point: 2`; в нашем 2-томном контейнере (Preboot 0x10 + System 0x1) нет тома role-Update; возможно, гейтит нормальную загрузку daemon'ов. (2) крайняя медленность TCG (каждый процесс заново мапит 5.6ГБ; shared region не шарится?). Next: (a) добить libignition preboot (dtpatch fstab role-256 ИЛИ хук DT_get_fstab_entries), (b) дать очень большой T и проверить, доходит ли до LaunchDaemons/SpringBoard, (c) profile: почему кэш не шарится между процессами.
+
+**Инструменты сессии:** dsc_cdhashes.py, build_dsc_tc.py, apply_dsc_tc.sh, build_big_hybrid.sh, boot_big.sh, analyze_svc.sh, svc_paths.sh, svc_procs.sh. Гейт svc-трейсера: VR_SVCLOG (helper.c).
