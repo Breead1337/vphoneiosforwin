@@ -1969,3 +1969,13 @@ libSystem и все системные dylib в iOS 26 — в **dyld shared cach
 - **Version-mismatch 26.1/26.4 низкий риск:** dyld взят из 26.1-rootfs → dyld↔кэш совпадают; ядро 26.4 только мапит, page/CS-валидацию обходим (VR_MOV0 cs_invalid_page, vm_fault_enter_prepare).
 - Новые тулы: recon_dyld_cache.sh, recon_sizes.sh, recon_apfs_tools.sh, build_big_hybrid.sh.
 - **Next:** boot `ROOT2=root2.big.img` → читать dyld-лог: (a) кэш смапился → следующая стена launchd main/backboardd; (b) «no dyld cache» всё ещё → dyld игнорит классический путь, переносим кэш на cryptex-путь vol=0; (c) version/ABI reject → развилка vphone600 KC.
+
+## Обновление 24.09 (75) — dyld cache НАЙДЕН и ПРОЧИТАН (барьер пройден); новая стена = CS-регистрация shared cache (TXM sel-24)
+
+- **Boot root2.big.img (полный кэш на `/System/Library/Caches/com.apple.dyld/`):** dyld ВПЕРВЫЕ находит и читает кэш — размещение на классическом первом пути поиска сработало. Прошлое «no dyld cache» (файл не найден) → теперь:
+  `AMFI: '.../dyld_shared_cache_arm64e' is adhoc signed.` + `TXM [Error]: CodeSignature: selector: 24 | 0x02 | 0x22 | 3` + `dyld cache not loaded: code signature registration for shared cache failed`.
+- **Новая стена = ТА ЖЕ, что для launchd (TXM sel-24):** cdhash shared cache нет в trust cache → TXM отвергает регистрацию его cs_blob. Кэш adhoc-подписан (встроенный CodeDirectory в каждом файле).
+- **Диагностика (`dsc_cdhashes.py`):** парс dyld_cache_header (codeSignatureOffset@40 / Size@48 u64) → superblob 0xfade0cc0 → CD 0xfade0c02 SHA256 → cdhash=sha256(CD)[:20]. Все 80 файлов (главный + .01–.79, кроме .symbols/.atlas) валидно подписаны, НИ ОДНОГО нет в merged.trst.bin.
+- **Фикс (параллель сессии 72):** `build_dsc_tc.py` добавил 80 cdhash (формат tc_append: 24Б = cdhash[20]+HH(0xC002,0x3), сортирован) → merged2.trst.bin (3734→3814), пересобрал StaticTrustCache.img4 (91596Б), заинжектил в big-образ preboot FUD (`apply_dsc_tc.sh`). VR_TRUSTCACHE стал override → boot_big.sh передаёт merged2 (AMFI тоже видит cdhash кэша).
+- **Побочно:** libignition preboot-mount падает («failed to get volume for role 256», ignite()=2) — НЕ фатально (кэш берётся с классического пути, не через cryptex-graft).
+- **Next:** boot с merged2: TXM принял кэш → dyld смапит libSystem → launchd main → backboardd/SpringBoard. Если sel-24 остался → CS-регистрация кэша идёт НЕ по cdhash-in-TC → хук TXM/kernel shared-region CS.

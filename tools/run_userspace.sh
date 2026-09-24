@@ -3,7 +3,7 @@ set -e
 Q=~/inferno/build/qemu-system-aarch64
 W=~/vrwork
 FW=/mnt/d/vphonewin/fw/vz/AVPBooter.vresearch1.bin
-TC=/mnt/d/vphonewin/_work/tc/merged.trst.bin          # cloudOS(262) + iPhone-OS(3472) = 3734 cdhashes.
+TC=${TC:-/mnt/d/vphonewin/_work/tc/merged.trst.bin}   # cloudOS(262) + iPhone-OS(3472) = 3734 cdhashes.
 # (was os.trst.bin = cloudOS-only 262; hybrid iPhone-OS binaries like /sbin/launchd are adhoc-signed
 #  platform binaries whose trust comes from the static trust cache by cdhash — need the merged TC so TXM
 #  finds them instead of rejecting "CodeSignature".)
