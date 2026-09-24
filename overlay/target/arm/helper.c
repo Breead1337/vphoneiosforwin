@@ -9431,9 +9431,10 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
             if (gnew && gseen_n < 2048) {
                 gseen[gseen_n++] = key;
                 if (gf) {
-                    fprintf(gf, "#%d %spc=0x%" PRIx64 " x16=0x%" PRIx64 " (t=0x%" PRIx64 ") x0=0x%" PRIx64 " lr=0x%" PRIx64 "\n",
+                    fprintf(gf, "#%d %spc=0x%" PRIx64 " x16=0x%" PRIx64 " (t=0x%" PRIx64 ") x0=0x%" PRIx64 " lr=0x%" PRIx64 " enter[el%d]=0x%" PRIx64 " vbgl0=0x%" PRIx64 " vbgl1=0x%" PRIx64 " vbgl2=0x%" PRIx64 "\n",
                             gseen_n, from_gl ? "[GL]" : "", env->pc, env->xregs[16], x16m,
-                            env->xregs[0], env->xregs[30]);
+                            env->xregs[0], env->xregs[30], new_el, addr,
+                            env->gxf.vbar_gl[0], env->gxf.vbar_gl[1], env->gxf.vbar_gl[2]);
                     fflush(gf);
                 }
             }

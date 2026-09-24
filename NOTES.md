@@ -1921,3 +1921,26 @@ init для fsck**, но следующий exec bad_macho — от другог
 После TXM: dyld_shared_cache (26.1) под 26.4-ядром → backboardd/SpringBoard → графика (vr-apv-fb). Каждая — стена; version-mismatch 26.1/26.4 — риск.
 
 **Тулы:** `find_roothash_hooks.py` (авто-парс сегментов + ADRP+ADD-скан), `check_launchd_cdhash.sh` (mount vol=1 + extract launchd), `launchd_cdhash.py` (cdhash + TC-membership). run_userspace.sh: `ROOT2=` override + `VR_WATCH_EXTRA`.
+
+## Обновление 24.09 (72) — 🎯 TXM code-sign ПРОБИТ (StaticTrustCache-замена); launchd грузится; новая стена = dyld shared cache (Cryptex)
+
+**Корень TXM-стены найден:** TXM грузит trust cache НЕ из нашего DT-инъекта (`/chosen/memory-map/TrustCache` кормит только AMFI/ядро), а из **preboot-store `FUD/StaticTrustCache.img4`** при secure-boot. В hybrid этот файл был **6297 байт = cloudOS TC (262 записи)** — без iPhone-OS launchd → TXM отвергал `CodeSignature: selector: 24`. (Доказано: в логах НЕТ ни одного TXM-сообщения о загрузке DT-TC; genterseq показал secure-мир в рантайме @0xfffffe000ef5xxxx, VBAR_GL1=0xfffffe000ef58000, TXM вызывается ВНУТРИ SPTM, не отдельным GENTER.)
+
+**ФИКС (сработал):** StaticTrustCache.img4 = `IMG4{IM4P{"trst","1",payload}}` **без IM4M-манифеста** (неподписан) → заменяем payload свободно. Собрал новый из `merged.trst.bin` (3734 cdhash, iPhone-OS included) через `tools/build_static_tc.py` (IM4P+IMG4 DER-обёртка), заинжектил в preboot FUD через `tools/inject_static_tc.sh` (6297→89676 б). **РЕЗУЛЬТАТ: `CodeSignature: selector: 24` ИСЧЕЗ — TXM принял launchd.**
+
+**Новая стена (dyld shared cache):** launchd грузится, libignition отработал («hello from launchd.1»), затем dyld:
+```
+Library not loaded: /usr/lib/libSystem.B.dylib
+  Referenced from: /sbin/launchd
+  Reason: tried: '/usr/lib/libSystem.B.dylib' (no such file, no dyld cache)
+```
+libSystem и все системные dylib в iOS 26 — в **dyld shared cache**, который лежит в **Cryptex** (`043-54303-126.dmg.aea`, ~1.9ГБ), а мы в rootfs включили только OS DMG (`043-53486-120.dmg`). Cryptex НЕ включён → нет shared cache → dyld не резолвит libSystem.
+
+**СЛЕД. ШАГ:** добавить Cryptex/dyld_shared_cache:
+1. Расшифровать `043-54303-126.dmg.aea` (`ipsw.exe fw aea`, как OS DMG).
+2. Извлечь `System/Library/dyld/dyld_shared_cache_arm64e*` + Cryptex-контент.
+3. Либо разместить shared cache по классическому пути в rootfs (`/System/Library/dyld/`), либо смонтировать Cryptex как iOS (Cryptex1 subsystem, grafted). Начать с простого — положить кэш туда, где dyld его ищет.
+
+**Стены hybrid — статус:** root-hash ✓ · AMFI CoreTrust ✓ · **TXM ✓** · dyld shared cache 🔴 (Cryptex) · далее: launchd main → backboardd/SpringBoard → графика (vr-apv-fb). Version-mismatch 26.1/26.4 — риск.
+
+**Тулы:** `build_static_tc.py`, `inject_static_tc.sh`, `copy_static_tc.sh`, `inspect_preboot_tc.sh`. helper.c: genterseq теперь пишет enter[el]/vbar_gl (карта secure-мира).
