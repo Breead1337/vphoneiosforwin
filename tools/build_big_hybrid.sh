@@ -60,4 +60,5 @@ umount "$MN"
 
 echo "=== [5/5] apfsck (on container loop dev, before detach) ==="
 apfsck "$LN" 2>&1 | tail -6 || echo "(apfsck reported issues - review above)"
+chown ard:ard "$NEW" 2>/dev/null || true   # built as root; qemu runs as ard
 echo "DONE -> $NEW (apparent $(ls -la $NEW | awk '{print $5}') B, on-disk $(du -h $NEW|cut -f1))"

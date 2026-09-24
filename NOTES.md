@@ -2014,3 +2014,17 @@ svc-трейс (svc_launchd_seq.sh) показал: после dyld launchd от
 - (B) Урезать DeviceTree fstab до System+Preboot (dtpatch, убрать xART/Data/Update/Hardware ноды) — ленивее/быстрее; /private/var останется каталогом на System (у нас RW). Пробую (B) первым.
 
 **Оценка до SpringBoard:** самое трудное (secure-world) позади. Осталось: fstab/тома → launchd спавнит демоны → backboardd → SpringBoard → графика (vr-apv-fb). ГЛАВНЫЙ long-pole — СКОРОСТЬ: каждый процесс мапит 5.6ГБ кэша ~7мин в TCG; если не шарится shared region — полный буст = часы. До первого кадра SpringBoard: несколько подходов, не один прогон.
+
+## Обновление 24.09 (79) — 🎯 6 томов: preboot МОНТИРУЕТСЯ, launchd инициализируется; новая стена = cryptex1 sniff
+
+Пересобрал root2.big.img как **6-томный контейнер** (apfsprogs_multivol.py расширен: роли Preboot 0x10 / System 0x1 / Data 0x40 / Update 0xc0 / **xART 0x100** / Hardware 0x140; apfsck-clean, роли проверены role_check.py). Тул `rebuild_6vol.sh` (build_big_hybrid 6-vol → apply_dsc_tc). ⚠️ образ пересобирается владельцем root → `chown ard` (добавлен в build_big_hybrid).
+
+**Результат boot (traced T=800, boot_6vol.console):**
+- ✅ `DT_get_fstab_entries: failed to get volume for role: 256` ИСЧЕЗЛО (было — гейт).
+- ✅ **preboot МОНТИРУЕТСЯ:** `preboot mount point: /private/preboot`, `mounting preboot: dev=/dev/disk1s1, uid=0, gid=0`.
+- ✅ **launchd инициализируется по-настоящему:** читает `/System/Library/FeatureFlags/*.plist`, `/Library/Preferences/FeatureFlags/*`, `SystemVersion.plist`, `/var/db/timezone/*`, спавнит `/sbin/fsck`. (Раньше — только /dev/null+/dev/console.)
+- 🔴 **НОВАЯ СТЕНА — cryptex1 sniff:** `libignition: cryptex1 sniff: detecting cryptex1 directory` → `ignition failed: 8` → `ignite() returned 8` → launchd повторяет ignition (петля 2×). Гистограмма выросла (34557 GENTER, 621 DA, 1003 IRQ — больше активности).
+
+**cryptex1 sniff = graft OS-cryptex1.** libignition после mount preboot ищет cryptex1-директорию (строки: `cryptex1/current`, `__cryptex1_sniff_fire`, `__cryptex1_sniff_payload_check`, `failed to stat cryptex1 canary`) в /private/preboot и падает (err 8), т.к. cryptex не grafted. Кэш dyld у нас на классическом пути (не через cryptex), но libignition ВСЁ РАВНО требует cryptex1-graft. **Next:** реверс cryptex1-sniff в libignition (в /usr/lib/dyld) → либо создать минимальную cryptex1-структуру в preboot (`current` симлинк + canary + graft point с контентом → путь «cryptex content already available, ignored error»), либо застабить sniff. Это территория cryptex-graft (глубокий фронтир). libignition = userspace (в dyld), VR_*-хук не подходит — патчить бинарь dyld на диске ИЛИ подсунуть файлы.
+
+Тулы: rebuild_6vol.sh, check_6vol_boot.sh, spawn_and_cryptex.sh, dt_fstab.py, role_check.py.
