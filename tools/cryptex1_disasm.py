@@ -35,8 +35,9 @@ def foff_to_vm(fo):
             return vmaddr + (fo - fileoff)
     return None
 
-targets = [b"detecting cryptex1 directory", b"failed to stat cryptex1 canary",
-           b"cryptex1 sniff", b"failed to open covered graft point", b"ignition failed"]
+targets = [b"failed to open os cryptex", b"failed to open canonical root",
+           b"cryptex not grafted", b"grafting boot cryptexes", b"no root xattr present",
+           b"cryptex content already available", b"opening preboot subdirectory"]
 str_vms = {}
 for t in targets:
     i = d.find(t)

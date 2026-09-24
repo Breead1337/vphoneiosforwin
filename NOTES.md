@@ -2039,3 +2039,15 @@ capstone-дизасм (`cryptex1_disasm.py`) нашёл место: cryptex1-sni
 - capstone 5.0.7 + objdump в WSL готовы для дальнейшего реверса.
 
 Инструменты: cryptex1_disasm.py, run_cryptex1_disasm.sh, cryptex1_recon.sh.
+
+## Обновление 24.09 (81) — cryptex1: staged dir + патч graft-os в dyld + re-sign CodeDirectory
+
+**cryptex1 sniff (error 8)** = fstatat("cryptex1") даёт ENOENT → return 8. Фикс: создать `/private/preboot/cryptex1` в Preboot-томе (vol0) → sniff проходит. Затем graft спускается глубже: `cryptex1/current` (создал), потом `failed to open canonical root: 2` — требует реальный OS-cryptex объект (а apfs_graft за-NOP'лен). Пустые каталоги — тупик.
+
+**Патч libignition (в /usr/lib/dyld):** graft-os функция (0x7d..) при провале ставит w23=errno и на `0x7e1a8: cbnz w23, <err>` уходит в фатальную ветку; NOP этого CBNZ → всегда success-return 0. Проверено (disasm_range): error-путь 0x7ddf8 делает тот же cleanup sp+0x50 + лишний цикл 4 объектов → NOP лишь «утекает» 4 объекта (безобидно), не крашит. Кэш dyld у нас на классич. пути → реальный graft не нужен.
+
+**❌ Патч без re-sign КРАШИТ dyld на load-time** (страница 126 не сходится с CodeDirectory → dyld отвергается при exec, падает ДО ignition; svc.log только ранний старт Sandbox/AMFI). Проверено: восстановление непропатченного dyld (тем же rm+cp) снова доходит до graft → rm+cp невиновен, дело в подписи.
+
+**✅ RE-SIGN (resign_dyld.py):** после патча байта пересчитать SHA256 страницы 126 → записать в code-slot CodeDirectory (@file 0x131696) → пересчитать cdhash (old 32b50618 → new d689d37f). Добавить новый cdhash в trust cache (merged3 = merged2+1 = 3815) + пересобрать/переинжектить StaticTrustCache. dyld: hashType2/SHA256, pageSize4096, 305 code-slots, codeLimit 0x130600. Инструменты: cd_parse.py, resign_dyld.py, resign_apply.sh, restore_dyld.sh, patch_dyld_cryptex.py, stage_cryptex1*.sh.
+
+Прогон: `TC=merged3 ROOT2=root2.big.img VR_SVCLOG=1 boot_big.sh`. Проверяю, проходит ли теперь graft и продолжается ли ignition (результат в след. заметке).
