@@ -2113,3 +2113,14 @@ com.apple.xpc.launchd: hello, launchd UUID … / Darwin Bootstrapper 7.0.0 / ent
 - Re-sign страниц 5/99/125, cdhash 7a8d0b47, merged6.
 
 Логика: launchd (PID1) → systemwide (создаёт shareable регион для XPC/boot-tasks, как в v4); дети (PID>1) → private (мапят кэш из файла, как в v5, без out-of-range-bind). Прогон T=1200 VR_SVCLOG=1 TC=merged6. Ожидание: launchd доходит до ondemand+boot-tasks И fsck работает → барьер пробит. Результат — в след. заметке.
+
+## Обновление 24.09 (87) — КРИТИЧЕСКАЯ КОРРЕКЦИЯ: дети НЕ зовут dyld-map, барьер чисто kernel-side
+
+boot_v6 (PID-трамплин) результат + анализ getpid:
+- getpid (x16=0x14) вызван ТОЛЬКО launchd (pc-base 0x102 launchd-early, 0x243 launchd-XPC). Ребёнок (0x104) — трейс = host_self_trap → open /dev/console → write "out of range bind (max 0)" → close. БЕЗ getpid, БЕЗ cache-open, БЕЗ 0x63c94.
+- **ВЫВОД 1: spawned-дети НЕ вызывают dyld cache-map функции (0x62c10/0x63c94).** Они получают shared region ОТ ЯДРА при exec (чтение dyld_all_image_infos.sharedCacheBaseAddress из памяти, без syscall) → регион ПУСТОЙ → краш на fixup'ах (max 0).
+- **ВЫВОД 2: dyld-патчи (redirect v5, трамплин v6) НЕ чинят детей** — дети не идут через этот код. Подтверждено: v6 launchd работает (systemwide, ondemand+boot-tasks✓), но fsck снова `out of range bind` (как v4).
+- **КОРРЕКЦИЯ v5:** «out of range bind=0» в v5 был потому, что launchd (redirect→private) крашился ПОСЛЕ ignition ДО спавна fsck → ребёнка не было. Дети НЕ были починены (моя прошлая интерпретация неверна).
+- **v6 = текущее лучшее состояние** (launchd работает systemwide + трамплин, для детей инертен; эквивалент v4 по детям). dyld_v6/merged6.
+
+**БАРЬЕР ОКОНЧАТЕЛЬНО ЛОКАЛИЗОВАН: ядро даёт spawned-детям ПУСТОЙ shared region при exec.** launchd (первый) мапит кэш в СВОЙ регион; дети наследуют другой/пустой (kernel keying/sharing баг). Фикс — реверс XNU `vm_shared_region_enter`/`_get`/exec-path БЕЗ символов (KC стриплен) по паттернам. dyld-путь исчерпан (дети его не используют). Альтернатива-обход: патч dyld чтобы дети НЕ доверяли kernel-региону и мапили свой (0x62c10) — но это тоже глубокий dyld-реверс (найти чтение dyld_all_image_infos) + каждый процесс медленно мапит 5.6ГБ.
