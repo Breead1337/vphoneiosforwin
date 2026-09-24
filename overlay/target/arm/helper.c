@@ -9027,8 +9027,13 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                 static bool svclog_init = false;
                 if (!svclog_init) {
                     svclog_init = true;
-                    svclog = fopen("/home/ard/vrwork/svc.log", "w");
-                    if (!svclog) svclog = fopen("svc.log", "w");
+                    /* Ungated per-syscall tracing does ~16 MMU walks + fprintf on EVERY
+                     * userspace SVC, which cripples heavy phases (dyld shared-cache map).
+                     * Only enable when VR_SVCLOG is set; console/kprintf still show the story. */
+                    if (getenv("VR_SVCLOG")) {
+                        svclog = fopen("/home/ard/vrwork/svc.log", "w");
+                        if (!svclog) svclog = fopen("svc.log", "w");
+                    }
                 }
                 if (svclog) {
                     fprintf(svclog, "[SVC%s %s %5d (%s)] pc=0x%" PRIx64 " a0=0x%" PRIx64 " a1=0x%" PRIx64 " a2=0x%" PRIx64 " a3=0x%" PRIx64 " x16=0x%" PRIx64 " lr=0x%" PRIx64 " sp=0x%" PRIx64,

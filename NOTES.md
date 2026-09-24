@@ -1979,3 +1979,14 @@ libSystem и все системные dylib в iOS 26 — в **dyld shared cach
 - **Фикс (параллель сессии 72):** `build_dsc_tc.py` добавил 80 cdhash (формат tc_append: 24Б = cdhash[20]+HH(0xC002,0x3), сортирован) → merged2.trst.bin (3734→3814), пересобрал StaticTrustCache.img4 (91596Б), заинжектил в big-образ preboot FUD (`apply_dsc_tc.sh`). VR_TRUSTCACHE стал override → boot_big.sh передаёт merged2 (AMFI тоже видит cdhash кэша).
 - **Побочно:** libignition preboot-mount падает («failed to get volume for role 256», ignite()=2) — НЕ фатально (кэш берётся с классического пути, не через cryptex-graft).
 - **Next:** boot с merged2: TXM принял кэш → dyld смапит libSystem → launchd main → backboardd/SpringBoard. Если sel-24 остался → CS-регистрация кэша идёт НЕ по cdhash-in-TC → хук TXM/kernel shared-region CS.
+
+## Обновление 24.09 (76) — dyld shared cache МАПИТСЯ (TXM принял cdhash кэша); стена dyld ПРОЙДЕНА
+
+- **С merged2.trst.bin (80 cdhash кэша в TC) `selector 24` / `adhoc` / `no dyld cache` ИСЧЕЗЛИ.** В трейсе dyld реально мапит кэш:
+  - `[SVC UNIX 73 (munmap)] s0="dyld_v1  arm64e"` — dyld в userspace открывает/валидирует/мапит;
+  - `[SVC UNIX 463] s1="dyld_shared_cache_arm64e.13" .14 .15 …` — последовательный обход сабкэшей (прогресс, НЕ петля);
+  - `SVC-GL MACH 3` адреса 0x78214000 += 0x4000 — ядро мапит страницы кэша.
+- **Итог: dyld-кэш-стена функционально пройдена.** TXM cdhash-in-trustcache фикс сработал и для shared cache (полная параллель launchd). cryptex-graft НЕ понадобился — классический путь `/System/Library/Caches/com.apple.dyld/` + TXM TC достаточно.
+- **Ограничение: медленно.** Прогон упал по T=300, dyld был на сабкэше .15 из ~80 — не застрял, просто TCG постранично + ВСЕГДА-ВКЛ svc-трейсер (16 MMU-walk + fprintf на КАЖДЫЙ userspace-SVC) тормозят.
+- **Оптимизация:** гейтнул svc.log за `VR_SVCLOG` (overlay/target/arm/helper.c) — по умолчанию OFF, история всё равно видна через kprintf/console. Пересобрал qemu (incremental). Дальше — длинный прогон без VR_SVCLOG.
+- **Next:** boot с большим T без VR_SVCLOG → дать dyld домапить 80 сабкэшей + связать launchd → launchd main → следующая стена (backboardd/SpringBoard/графика). libignition preboot-mount по-прежнему падает (role 256), но не фатально.
