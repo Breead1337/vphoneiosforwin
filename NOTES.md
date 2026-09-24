@@ -2083,3 +2083,13 @@ com.apple.xpc.launchd: hello, launchd UUID … / Darwin Bootstrapper 7.0.0 / ent
 **СЛЕД. ФРОНТИР (глубокий, отдельный заход):** почему posix_spawn'нутый ребёнок получает мусорные/нулевые страницы __LINKEDIT. Гипотезы: (1) наш cs_invalid_page→0 обход принимает НЕ-подкачанные (нулевые) страницы для детей (launchd faultится иначе); (2) guest exec/pager для posix_spawn читает не тот offset. Реверс guest vm_fault/cs_validate_page + load_machfile для детей. Это recurring wall (был в cloudOS mount-phase-2). Инструменты: probe_child.sh, probe_bind.sh, probe_fsck_cdhash.sh, probe_sharedregion.sh, check_decmpfs.sh.
 
 **ГЛАВНОЕ: за сессию прошли ~10 стен — от «no dyld cache» до ignition-complete + launchd гонит boot-таски (глубже, чем когда-либо).** Техники: полный кэш+cdhash в TC, 6-томный контейнер, патч dyld+re-sign CodeDirectory. Коммиты d252a80…(эта).
+
+## Обновление 24.09 (84) — ОГРОМНЫЙ заход в shared-region: патч dyld redirect systemwide→private
+
+Реверс dyld (без символов в KC → работаю в dyld, он якорь-богатый):
+- `shared_region_check_np` (syscall 294) stub @0x6ee4; launchd его зовёт (→-1→мапит), ребёнок НЕ зовёт.
+- Две параллельные cache-map функции: **`mapSplitCachePrivate` @0x62c10** (строка «mapped dyld cache file private to process») и **systemwide @0x63c94** — ОДИНАКОВАЯ сигнатура (x0=SharedCacheOptions, x1=SharedCacheLoadInfo), обе зовут саб-мапперы 0x64144/0x64304. Диспетч через C++-vtable (0 ADRP-ссылок → chained-fixup data, не патчится напрямую). `DYLD_SHARED_REGION` env есть, но парсинг глубокий.
+- **ПАТЧ (dyld_v5, resign_apply3.sh):** вход systemwide `0x63c94: pacibsp → b 0x62c10` (bytes dffbff17, offset −1057, проверено). Идея: процессы по systemwide-пути (включая spawned-детей, что наследуют пустой регион) вместо этого маппят кэш ПРИВАТНО из файла → резолвят fixup'ы → не крашатся. Плюс сохранён 0x7d98c graft-NOP. Re-sign страниц 99+125, cdhash cdf23e55, merged5.
+- ⚠️ Цена: каждый процесс мапит 5.6ГБ (~7мин TCG) — медленно, но если работает — дети идут, каскад к backboardd/SpringBoard. Прогон: `T=1200 VR_SVCLOG=1 TC=merged5 boot_big.sh`. Ключевой сигнал: fsck ОТКРЫВАЕТ .00-.79 вместо мгновенного `out of range bind`.
+
+Инструменты реверса: dyld_callers.py, dyld_funcref.py, dyld_strxref.py, find_dyld_srcheck.py, dump_dsr_strings.py, parse_kc_symbols.py, kc_structure.py, kc_syms2.py, resign_apply3.sh (dyld_v5). Результат — в след. заметке.
