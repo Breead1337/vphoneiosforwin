@@ -1960,3 +1960,12 @@ libSystem и все системные dylib в iOS 26 — в **dyld shared cach
 **Материал готов (не в git):** `~/vrwork/cryptex/043-54303-126.dmg` (расшифрован, 4.95ГБ, кэш внутри). Тулы разведки закоммичены: explore_cryptex.sh, find_cryptex_cache.sh, mount_cryptex_dbg.sh, inspect_rootfs_dyld.sh, check_rootfs_space.sh.
 
 **Стены hybrid — статус:** root-hash ✓ · AMFI ✓ · TXM ✓ · dyld shared cache 🔴 (нужен bigger образ + Cryptex + version-check) · далее launchd main → backboardd/SpringBoard → графика.
+
+## Обновление 24.09 (74) — опровергнут ложный блокер dyld-graft; собран bigger-образ 28G с ПОЛНЫМ кэшем
+
+- **Опровержение:** прошлый вывод «файлов на диске недостаточно, кэш маппит только ядро через grafted cryptex» сделан по НЕПОЛНОМУ тесту — `place_cache_test.sh` копировал лишь 2 файла из 82 (главный + `.01`). dyld отвергает неполный split-cache целиком → «no dyld cache». Полный кэш из Cryptex = 82 файла / 5.6 ГБ (`.symbols` 999 МБ — только отладка, пропускаем → ~4.6 ГБ).
+- **Пути поиска dyld (из /usr/lib/dyld):** первый — `/System/Library/Caches/com.apple.dyld/` (классический, System vol=1, монтируется в /), затем cryptex-пути `/System/Cryptexes/OS` → `/private/preboot/Cryptexes/OS/`. Есть override `DYLD_SHARED_CACHE_DIR`. libignition имеет фолбэк «cryptex content already available … ignored error» → файлы по пути МОГУТ заменить реальный graft.
+- **Блокер размера решён БЕЗ ресайза:** Linux apfs-rw ресайз не умеет; `mkroot.sh` (patched mkapfs, NVOLS=2, роли Preboot 0x10 / System 0x1) строит свежий контейнер любого размера. `tools/build_big_hybrid.sh`: mkroot 28G → cp -a vol0 (boot-store + merged StaticTrustCache) → cp -a vol1 (rootfs) → полный кэш в `/System/Library/Caches/com.apple.dyld/` + символлинк на cryptex-путь. Роли сохранены → загрузка не ломается; root-hash обходим хуками → volume-UUID mismatch не важен.
+- **Version-mismatch 26.1/26.4 низкий риск:** dyld взят из 26.1-rootfs → dyld↔кэш совпадают; ядро 26.4 только мапит, page/CS-валидацию обходим (VR_MOV0 cs_invalid_page, vm_fault_enter_prepare).
+- Новые тулы: recon_dyld_cache.sh, recon_sizes.sh, recon_apfs_tools.sh, build_big_hybrid.sh.
+- **Next:** boot `ROOT2=root2.big.img` → читать dyld-лог: (a) кэш смапился → следующая стена launchd main/backboardd; (b) «no dyld cache» всё ещё → dyld игнорит классический путь, переносим кэш на cryptex-путь vol=0; (c) version/ABI reject → развилка vphone600 KC.
