@@ -7915,9 +7915,27 @@ void arm_log_exception(CPUState *cs)
         static FILE *exclog = NULL; static bool exc_init = false;
         if (!exc_init) { exc_init = true; exclog = fopen("/home/ard/vrwork/exc.log", "w"); }
         if (exclog) {
+            int el = arm_current_el(env);
             fprintf(exclog, "[EXC %s] EL%d pc=0x%" PRIx64 " far=0x%" PRIx64 " esr=0x%" PRIx64 "\n",
-                    en, arm_current_el(env), env->pc,
+                    en, el, env->pc,
                     env->exception.vaddress, (uint64_t)env->exception.syndrome);
+            /* Detailed dump for a near-NULL EL1 fault (the keystore null-deref): slide
+             * anchor (vbar), all GPRs (which one is NULL), and the faulting instruction. */
+            if (idx == EXCP_DATA_ABORT && el == 1 && env->exception.vaddress < 0x100000) {
+                fprintf(exclog, "  vbar=0x%" PRIx64 " sp=0x%" PRIx64 "\n",
+                        env->cp15.vbar_el[1], env->xregs[31]);
+                for (int r = 0; r < 31; r += 4) {
+                    fprintf(exclog, "  x%d-%d = %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
+                            r, r+3, env->xregs[r], r+1<31?env->xregs[r+1]:0,
+                            r+2<31?env->xregs[r+2]:0, r+3<31?env->xregs[r+3]:0);
+                }
+                uint32_t iw = 0;
+                GetPhysAddrResult r = {}; ARMMMUFaultInfo fi = {};
+                if (!get_phys_addr(env, env->pc, MMU_INST_FETCH, 0, arm_mmu_idx(env), &r, &fi)) {
+                    address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &iw, 4);
+                }
+                fprintf(exclog, "  insn@pc = %08x\n", iw);
+            }
             fflush(exclog);
         }
     }

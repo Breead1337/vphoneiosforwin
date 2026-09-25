@@ -2177,3 +2177,20 @@ boot_v6 (PID-трамплин) результат + анализ getpid:
 - ⚠️ EL1 data abort на null НЕ паникует, а зациклен (ретрай той же инструкции) — возможно, доставка EL1-аборта в обработчик XNU под SPTM/GXF в эмуляторе некорректна (retry-loop вместо panic). Стоит проверить: должно ли это паниковать, или эмулятор не доставляет abort.
 
 **Next (keystore-фронтир):** (1) локализовать 0xfffffe0031a505e4 в APFS-kext (разобрать fileset: найти APFS __TEXT_EXEC, вычислить рантайм-слайд kext'а по vbar/известной ф-ии, смапить pc→link-адрес) → понять, какой объект+0xe00 (media-key/keybag/crypto state); (2) либо застабить APFS-крипто-путь для unencrypted Data-тома (пропустить keystore), либо хукнуть media-keys-миграцию на успех (kernel AppleKeyStore/APFS), либо создать реальные media-keys (SEP-gated). (3) параллельно проверить SPTM-доставку EL1-аборта (retry-loop подозрителен). Тул: exc.log через VR_EXCLOG.
+
+## Обновление 25.09 (91) — keystore-стена: разбор паники, VBAR link, coredump-петля, флейковость
+
+Расширил VR_EXCLOG: для near-null EL1-аборта дампит vbar + все GPR + инструкцию (helper.c). Плюс тулы `find_vbar.py`, `dis_kc.py`.
+
+**VBAR link-адрес = 0xfffffe0008a5f000** (нашёл `adrp x9,#0xfffffe0008a5f000; msr vbar_el1,x9` @0xfffffe00092d0070). Теперь для ЛЮБОГО прогона **KASLR-слайд = vbar_runtime − 0xfffffe0008a5f000**, и link = pc − slide (работает и для kext'ов fileset — слайд единый).
+
+**«Corefile is not yet initialized» + memcpy в [0x4000] = сломанный coredump/panic-dump путь ЯДРА** (kdp_core/kern_dump, строки @KC 0x241477+). Разобрал memcpy-краш (boot_exc2, slide 0x375C0000 по vbar=0xfffffe004001f000): link 0xfffffe0008a62130 = generic memcpy (`ldp/stp` + `strb w3,[x1]`), x1=dst=0x4000 (мусорный указатель от вызывающего = panic-dump буфер). Т.е. это ВТОРИЧНЫЙ краш: primary-паника → ядро пишет coredump → corefile не инициализирован → dump-путь с null-буфером → фолт → **зацикливание/зависание** (скрывает реальную panic-строку).
+
+**Primary-краш (keystore, из boot_dp): EL1 DABT `pc=0xfffffe0031a505e4 far=0xe00` в APFS-kext, зациклен.** Причина — `mount: failed to migrate Media Keys, error = c002` → crypto/keybag-объект тома Data = NULL → APFS дерефит [null+0xe00]. Kernel data abort на null = должен паниковать, но зациклен (не доходит до чистой паники — либо эмулятор некорректно доставляет EL1 sync-abort в sleh под SPTM/GXF, либо panic→coredump-петля выше).
+
+**Флейковость (мета-блокер итераций):** прогоны НЕ детерминированы — иногда доходят до mount Data (boot_dp/sprr), иногда залипают на «ignition sequence complete» >23 мин без ondemand (boot_exc2/3). launchd НЕ зациклен — просто медленный в фазе mapping кэша/XPC-init (TCG + нагрузка хоста). Не баг, разброс производительности. Осложняет итерации (15-40 мин/прогон, исход случаен).
+
+**План по keystore-стене (следующий заход):**
+1. (диагностика) Отключить/обойти сломанный coredump-путь (VR-хук на kern_dump/coredump в KC @~0x241811) ЛИБО проверить доставку EL1 sync-abort в sleh под SPTM → увидеть реальную panic-строку primary-краша (назовёт APFS-функцию/ассерт).
+2. (фикс) Локализовать 0xfffffe0031a505e4 в APFS-kext (по slide из vbar того же прогона) → понять NULL-объект+0xe00; затем либо застабить APFS-крипто-путь для unencrypted Data-тома (skip media-keys/keybag), либо хукнуть media-keys на успех, либо фейкнуть keystore (AppleKeyStore kext).
+3. Весь data-protection/keystore стек SEP-завязан — фейк даёт null-объекты, крашащие разные пути (APFS null+0xe00, и др.). Возможно, нужен комплексный стаб крипто-пути APFS для unencrypted-томов.
