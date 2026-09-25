@@ -22,12 +22,12 @@ export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe
 # 0xfffffe0008aaab34 — tbz w8,#4,#0xfffffe0008aaa988 (loop-back branch in SEP wait loop).
 #   NOPing this tbz makes execution skip the back-branch and continue forward to cleanup/exit.
 # 0xfffffe0008aafd1c — bl panic in thread_call.c: "Invalid thread call qos value: %d" NOP.
-export VR_MOV0="0xfffffe0007cf3d6c,0xfffffe00088ce284,0xfffffe00088b779c,0xfffffe0008b06314"
+export VR_MOV0="${VR_MOV0:-0xfffffe0007cf3d6c,0xfffffe00088ce284,0xfffffe00088b779c,0xfffffe0008b06314}"
 # 0xfffffe0007cf3d6c: mov x0,x21 → mov x0,#0 before retab vnode_check_signature in release KC.
 # 0xfffffe00088ce284: APFS handle_fsioc_graft validate_payload_and_manifest -> 0 (Patch 15).
 # 0xfffffe00088b779c: APFS mountroot vfs_flags force 0 (RW root mount).
 # 0xfffffe0008b06314: vm_fault_enter_prepare bl cs_invalid_page -> mov x0, #0 (allow page validation).
-export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50,0xfffffe0008ab04d4,0xfffffe0008aaa8f0,0xfffffe0008914100,0xfffffe000888d724"
+export VR_RET0="${VR_RET0:-0xfffffe00088b8c40,0xfffffe0008ee7e50,0xfffffe0008ab04d4,0xfffffe0008aaa8f0,0xfffffe0008914100,0xfffffe000888d724}"
 # NB: running kernel = kernelcache.research.vresearch101 (NOT release.raw.bin); addresses below
 # derived from tools/find_roothash_hooks.py against the research KC.
 # 0xfffffe0008914100: is_root_hash_authentication_required(_ios) entry -> 0 (auth NOT required).
@@ -41,7 +41,7 @@ export VR_RET0="0xfffffe00088b8c40,0xfffffe0008ee7e50,0xfffffe0008ab04d4,0xfffff
 # 0xfffffe0008aaa8f0: AppleSEPBooter SEP wait/send function entry — returns 0 immediately.
 #   Contains wfe spin loop at 0x8aaab18 that blocks indefinitely waiting for SEP mailbox event.
 #   Without real SEP hardware, wfe never gets a WakeUp Event and the kernel hangs forever.
-export VR_B="0xfffffe00088b7e08:0xfffffe00088b8058,0xfffffe0007cf3ce4:0xfffffe0007cf3d90,0xfffffe0007cf3d94:0xfffffe0007cf3dac,0xfffffe0008b06710:0xfffffe0008b06a44,0xfffffe0008ab064c:0xfffffe0008ab05a0,0xfffffe0009271100:0xfffffe00092711e4,0xfffffe0008aafca0:0xfffffe0008aafcbc,0xfffffe0007d57a70:0xfffffe0007d57aac,0xfffffe0007d57c58:0xfffffe0007d57c70,0xfffffe0007d57c78:0xfffffe0007d57880,0xfffffe0007d53cb4:0xfffffe0007d53d44,0xfffffe0007d577d4:0xfffffe0007d57880,0xfffffe000885cc60:0xfffffe000885cc78"
+export VR_B="${VR_B:-0xfffffe00088b7e08:0xfffffe00088b8058,0xfffffe0007cf3ce4:0xfffffe0007cf3d90,0xfffffe0007cf3d94:0xfffffe0007cf3dac,0xfffffe0008b06710:0xfffffe0008b06a44,0xfffffe0008ab064c:0xfffffe0008ab05a0,0xfffffe0009271100:0xfffffe00092711e4,0xfffffe0008aafca0:0xfffffe0008aafcbc,0xfffffe0007d57a70:0xfffffe0007d57aac,0xfffffe0007d57c58:0xfffffe0007d57c70,0xfffffe0007d57c78:0xfffffe0007d57880,0xfffffe0007d53cb4:0xfffffe0007d53d44,0xfffffe0007d577d4:0xfffffe0007d57880,0xfffffe000885cc60:0xfffffe000885cc78}"
 # --- AMFI CoreTrust / vnode_check_signature bypass (research KC; re-enabled for hybrid iPhone-OS
 #     adhoc-signed binaries, which trip the CT-policy reject the platform-signed cloudOS launchd skipped):
 #   0x7d57a70:0x7d57aac  CT-policy reject -> continue (skip "unsuitable CT policy" reject).

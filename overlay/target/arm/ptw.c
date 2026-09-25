@@ -1064,24 +1064,55 @@ pte_to_sprr_prot_is_guarded(CPUARMState *env, int ap, int xn, int pxn, bool guar
         }
     } else {
         /*
-         * vresearch101 non-guarded (EL0/EL1) SPRR decode. Derived empirically (SPRR-learn) for this core
-         * generation; differs from A13 (whose lo=1->RX, lo=2->R was wrong here). Guarded half above matches A13.
-         * ponytail: EL0/EL1 are lumped, so lo=1 shows as RWX where HW likely splits EL1-RW / EL0-RX; harmless
-         * over-grant for booting, tighten if a W^X or user/kernel check ever depends on it.
+         * vresearch101 non-guarded SPRR decode, split by EL.
+         *
+         * EL1 (kernel): keep the permissive empirical decode this core was tuned with
+         * (lo=1->RWX, lo=2/3->RW). The kernel needs broad access and this booted XNU all
+         * the way to launchd; leave it untouched.
+         *
+         * EL0 (user): decode a real read-only case (mirrors the guarded half
+         * {0:none,1:RX,2:R,3:RW}). The old code lumped EL0 in with EL1 and NEVER produced a
+         * read-only result, so every user page was writable. That silently defeated
+         * copy-on-write: a user write to a read-only shared file page (COW __DATA,
+         * __DATA_CONST) never faulted, so the kernel never made a private copy. launchd
+         * mutated the *shared* dyld __DATA page in place; the shared page kept launchd's
+         * runtime state, and the next spawned process (fsck) read that stale state
+         * (sMemoryManagerInitialized=1 / import count 0) and its dyld crashed on startup.
+         * Enforcing EL0 read-only makes the write fault, COW copies the page, and children
+         * finally get their own clean data. EL0 has no legitimate need to write RO pages.
          */
-        switch (attr & 3) {
-        case 0:
-            prot = 0;
-            break;
-        case 1:
-            prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
-            break;
-        case 2:
-        case 3:
-            prot = PAGE_READ | PAGE_WRITE;
-            break;
-        default:
-            assert_not_reached();
+        if (el == 0) {
+            switch (attr & 3) {
+            case 0:
+                prot = 0;
+                break;
+            case 1:
+                prot = PAGE_READ | PAGE_EXEC;
+                break;
+            case 2:
+                prot = PAGE_READ;
+                break;
+            case 3:
+                prot = PAGE_READ | PAGE_WRITE;
+                break;
+            default:
+                assert_not_reached();
+            }
+        } else {
+            switch (attr & 3) {
+            case 0:
+                prot = 0;
+                break;
+            case 1:
+                prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+                break;
+            case 2:
+            case 3:
+                prot = PAGE_READ | PAGE_WRITE;
+                break;
+            default:
+                assert_not_reached();
+            }
         }
     }
 

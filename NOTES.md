@@ -2124,3 +2124,25 @@ boot_v6 (PID-трамплин) результат + анализ getpid:
 - **v6 = текущее лучшее состояние** (launchd работает systemwide + трамплин, для детей инертен; эквивалент v4 по детям). dyld_v6/merged6.
 
 **БАРЬЕР ОКОНЧАТЕЛЬНО ЛОКАЛИЗОВАН: ядро даёт spawned-детям ПУСТОЙ shared region при exec.** launchd (первый) мапит кэш в СВОЙ регион; дети наследуют другой/пустой (kernel keying/sharing баг). Фикс — реверс XNU `vm_shared_region_enter`/`_get`/exec-path БЕЗ символов (KC стриплен) по паттернам. dyld-путь исчерпан (дети его не используют). Альтернатива-обход: патч dyld чтобы дети НЕ доверяли kernel-региону и мапили свой (0x62c10) — но это тоже глубокий dyld-реверс (найти чтение dyld_all_image_infos) + каждый процесс медленно мапит 5.6ГБ.
+
+## Обновление 25.09 (88) — 🎉🎉 БАРЬЕР ДОЧЕРНИХ ПРОЦЕССОВ ПРОБИТ: SPRR EL0 over-grant ломал copy-on-write
+
+**Первопричина стены сессий 82-87 («spawned-дети крашатся в dyld: out of range bind / Allocator assert») НАЙДЕНА и ИСПРАВЛЕНА. Это НЕ kernel shared-region (сессия 87 ошибалась) — это баг эмулятора в SPRR-декоде прав, ломавший COW между процессами.**
+
+**Диагностика (инструментальная, а не гадание):**
+- Добавил в SVC-трассировщик (helper.c) пробу на крашевый write dyld ребёнка: обход таблиц страниц ребёнка (VR_PTWALK, TTBR0 L1/L2/L3, 16КБ-гранула, коалесинг VA→PA).
+- Показал: у ребёнка ВСЕГО ~28 demand-faulted страниц (свой dyld + стек + commpage). **Shared cache НЕ замаплен, главный бинарь почти не замаплен.** Ребёнок падает в САМОМ dyld init (`Allocator.cpp: !sMemoryManagerInitialized`) — глобал dyld, который в свежем процессе = 0, читается как мусор. Краш НЕДЕТЕРМИНИРОВАН (то out-of-range-bind max0, то Allocator assert) = классика чтения несинхронизированных/чужих физ-страниц.
+- Ключевое наблюдение: launchd (PID 1) работал, потому что стартовал на СВЕЖЕЙ нулевой RAM QEMU; ребёнок берёт ПЕРЕИСПОЛЬЗОВАННЫЕ страницы. Значит популяция private-страниц ребёнка (COW из файла / zero-fill) была сломана.
+
+**Первопричина (`overlay/target/arm/ptw.c`, `pte_to_sprr_prot_is_guarded`, non-guarded ветка):** SPRR-декод прав для EL0/EL1 НЕ имел read-only исхода вообще: `case 1→RWX, case 2/3→RW`. Каждая читаемая user-страница была ещё и writable. Это молча ломало copy-on-write: **запись из EL0 в read-only shared-файловую страницу (COW __DATA, __DATA_CONST) НЕ фолтила** → ядро не делало приватную копию. launchd мутировал ОБЩУЮ dyld-__DATA-страницу на месте (sMemoryManagerInitialized=1, фикс-апы); общая страница сохраняла runtime-состояние launchd; следующий spawned-процесс (fsck) читал это чужое состояние → его dyld крашился на старте. Невидимо для launchd (читает свои же записи), фатально для второго процесса.
+
+**Фикс:** декод SPRR разделён по EL. EL1 (ядро) — прежний пермиссивный (не трогаем, бут и так дошёл до launchd). **EL0 (user) — реальный read-only исход, зеркалит guarded-половину: {0:none,1:RX,2:R,3:RW}.** SPRR-регистр уже индексируется по el (`sprr_el_br_el1[el][el]`), так что EL0 и EL1 к одной странице получают свой attr → своё право. Теперь user-запись в RO-страницу фолтит → COW копирует → дети получают чистые данные.
+
+**Результат (boot_sprr.console, T=1500, VR_SVCLOG):**
+- ✅ **ondemand достигнут, прошли 4 boot-таски: exclaves-boot, fsck, mount-phase-1, data-protection** (было — краш на первом же fsck).
+- ✅ **Дети работают с нормальными PID: mount (pid 4), mount_apfs (pid 5)** (было dyld[1]).
+- ✅ **Смонтирован том xART** → /private/xarts (mount-phase-1 — тоже была стена cloudOS-заметок).
+- ✅ **0 крашей** (VR_PTWALK не сработал ни разу; posix_spawn=3 успешных).
+- 🔴 **НОВАЯ СТЕНА (глубоко впереди):** `init_data_protection: Gigalocker file (/private/xarts/<UUID>.gl) doesn't exist: No such file or directory` → `Failed to initialize gigalocker: 2` (boot-таск data-protection). Keystore/data-protection требует gigalocker-файл в /private/xarts, которого нет. Дальше Corefile-краш.
+
+**Инструменты сессии:** VR_PTWALK-проба в helper.c (обход таблиц ребёнка); run_userspace.sh теперь уважает заранее заданные VR_MOV0/VR_RET0/VR_B (`${VR_X:-default}`); tools/wait_sweep.sh, watch_boot.sh, show_progress.sh (поллеры вех boot'а). Побочно: часть vm_fault/cs-хуков в run_userspace.sh стоит на release-KC-адресах (в research KC это другой код — напр. 0x8b06314 = mov x2,x8 в CAS-lock, 0x8ee7e50 = середина функции); вероятно не срабатывают (те адреса не исполняются), к COW-багу отношения не имеют, но стоит перепроверить/почистить.

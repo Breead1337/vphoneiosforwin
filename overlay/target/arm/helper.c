@@ -9043,6 +9043,58 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
                     if (s1[0]) fprintf(svclog, " s1=\"%s\"", s1);
                     if (s2[0]) fprintf(svclog, " s2=\"%s\"", s2);
 
+                    /* VR probe: when a child's dyld writes the "out of range bind" crash
+                     * string, sweep its address space so we can tell whether the shared
+                     * cache (0x180000000+) and its own Mach-O (0x100000000 region) are
+                     * actually mapped, or read as zeros. Decides child-binary vs empty-cache. */
+                    if (!from_gl && sysno == 4 && strstr(s1, "dyld[")) {
+                        /* Wide sweep of the child EL0 address space at 8 MB granularity;
+                         * report only MAPPED slices + first 4 words so we can identify the
+                         * child's own Mach-O (0xfeedfacf), the dyld shared cache (magic
+                         * "dyld"=0x646c7964) and whether __LINKEDIT-bearing regions hold data. */
+                        uint64_t vr_ttbr = env->cp15.ttbr0_el[1];
+                        fprintf(svclog, "\n  VR_PTWALK (child crash) TTBR0=0x%" PRIx64 " TCR=0x%" PRIx64 ":",
+                                vr_ttbr, env->cp15.tcr_el[1]);
+                        /* 16KB granule, T0SZ=17 -> 47-bit VA, 3 levels (L1 top).
+                         * indices 11 bits each: VA=(i1<<36)|(i2<<25)|(i3<<14). Enumerate leaves,
+                         * coalesce contiguous VA/PA runs, print first word of each run's start. */
+                        uint64_t vr_l1base = vr_ttbr & 0x0000FFFFFFFFC000ULL;
+                        uint64_t run_va = 0, run_pa = 0, run_len = 0; uint32_t run_w0 = 0;
+                        int vr_runs = 0;
+                        #define VR_ENT(base,idx) ({ uint64_t _e=0; address_space_read(cs->as,(base)+(idx)*8,MEMTXATTRS_UNSPECIFIED,&_e,8); _e; })
+                        for (int i1 = 0; i1 < 2048 && vr_runs < 300; i1++) {
+                            uint64_t d1 = VR_ENT(vr_l1base, i1);
+                            if ((d1 & 3) != 3) continue;            /* only table descriptors at L1 */
+                            uint64_t l2base = d1 & 0x0000FFFFFFFFC000ULL;
+                            for (int i2 = 0; i2 < 2048 && vr_runs < 300; i2++) {
+                                uint64_t d2 = VR_ENT(l2base, i2);
+                                if ((d2 & 1) == 0) continue;
+                                if ((d2 & 3) == 1) {                /* L2 block: 32MB */
+                                    uint64_t va = ((uint64_t)i1<<36)|((uint64_t)i2<<25);
+                                    uint64_t pa = d2 & 0x0000FFFFFE000000ULL;
+                                    uint32_t w0=0; address_space_read(cs->as,pa,MEMTXATTRS_UNSPECIFIED,&w0,4);
+                                    if (run_len && run_va+run_len==va && run_pa+run_len==pa) { run_len+=0x2000000ULL; }
+                                    else { if(run_len){fprintf(svclog,"\n    V:0x%09"PRIx64"..+0x%"PRIx64" pa:0x%09"PRIx64" w0=%08x",run_va,run_len,run_pa,run_w0);vr_runs++;} run_va=va;run_pa=pa;run_len=0x2000000ULL;run_w0=w0; }
+                                    continue;
+                                }
+                                if ((d2 & 3) != 3) continue;        /* table -> L3 */
+                                uint64_t l3base = d2 & 0x0000FFFFFFFFC000ULL;
+                                for (int i3 = 0; i3 < 2048; i3++) {
+                                    uint64_t d3 = VR_ENT(l3base, i3);
+                                    if ((d3 & 3) != 3) continue;    /* L3 page */
+                                    uint64_t va = ((uint64_t)i1<<36)|((uint64_t)i2<<25)|((uint64_t)i3<<14);
+                                    uint64_t pa = d3 & 0x0000FFFFFFFFC000ULL;
+                                    uint32_t w0=0; address_space_read(cs->as,pa,MEMTXATTRS_UNSPECIFIED,&w0,4);
+                                    if (run_len && run_va+run_len==va && run_pa+run_len==pa) { run_len+=0x4000ULL; }
+                                    else { if(run_len && vr_runs<300){fprintf(svclog,"\n    V:0x%09"PRIx64"..+0x%"PRIx64" pa:0x%09"PRIx64" w0=%08x",run_va,run_len,run_pa,run_w0);vr_runs++;} run_va=va;run_pa=pa;run_len=0x4000ULL;run_w0=w0; }
+                                }
+                            }
+                        }
+                        if (run_len && vr_runs<300) { fprintf(svclog,"\n    V:0x%09"PRIx64"..+0x%"PRIx64" pa:0x%09"PRIx64" w0=%08x",run_va,run_len,run_pa,run_w0); vr_runs++; }
+                        #undef VR_ENT
+                        fprintf(svclog, "\n  VR_PTWALK end (%d runs)\n", vr_runs);
+                    }
+
                     /* For userspace (EL0) traps, read buffer contents using stage 1 EL0 MMU */
                     if (!from_gl) {
                         static bool dumped_base = false;
