@@ -2206,3 +2206,15 @@ boot_v6 (PID-трамплин) результат + анализ getpid:
 **Инструменты:** `find_vbar.py` (VBAR link 0xfffffe0008a5f000), `dis_kc.py` (дизасм по link-VA, flat-map), `parse_fileset.py` (kext link-базы: APFS 0xfffffe000887aa00 __text, AppleSEPKeyStore 0x7230b50, AppleSEPManager 0x72360d0), VR_EXCLOG detailed dump (helper.c).
 
 **Операционное:** WSL нестабилен под нагрузкой (Wsl/Service/0x8007274c таймауты при load 9+); частые 40-мин прогоны истощают хост. Дизасм всего 40МБ KC капстоном >120с (таймаут) — работать по узким окнам/секциям. **Следующий заход по этим стенам — свежая целевая сессия.**
+
+## Обновление 25.09 (93) — 🎯 far=0xe00 РАСКРЫТ: это краш ПАНИК-ОБРАБОТЧИКА на null SPTM-state
+
+Легковесный VR_EXCLOG (только near-null far<0x100000 — логировать КАЖДЫЙ data abort с fflush перетряхивало тайминг и меняло исход boot'а!) позволил прогону дойти до mount Data И поймать детальный дамп far=0xe00:
+- **insn `f9470288` = `ldr x8, [x20, #0xe00]`, x20 = 0x0 (NULL)** → far=0xe00. vbar=0xfffffe004ce37000 → **slide=0x443D8000** → **crash link = 0xfffffe0008ab05e4** = **ГЛАВНОЕ ЯДРО** (не APFS!).
+- **Функция = KERNEL PANIC-HANDLER** (строки-якоря: «skipping local kernel core because the SPTM is in PANIC state» @0x704380f, «...INTERRUPTED» @0x7043875, **«Original panic string:»** @0x70438e1). Крашевый путь достигается через `tbnz w8,#4, 0x8ab05e4` @0xfffffe0008ab04a8 (глоб.флаг 0x779a000+0x2d2 бит4). x20 = SPTM-state объект = NULL (SPTM застаблен) → `ldr [x20,#0xe00]` → nested abort → **ЦИКЛ** → "Corefile not initialized" → зависание.
+
+**ГЛАВНЫЙ ВЫВОД:** вот ПОЧЕМУ все краши ВИСНУТ, а не паникуют чисто — **сам паник-обработчик крашится на null SPTM-state**, скрывая ПЕРВИЧНУЮ причину паники. Это объясняет и флейковость (ранние паники тоже виснут в этом обработчике).
+
+**Первичная паника (при mount Data) СКРЫТА.** Чтобы раскрыть: `VR_NOP_EXTRA=0xfffffe0008ab04a8` (заNOПить tbnz → обработчик пойдёт по пути печати «Original panic string» @0x8ab04f8 вместо краша). run_userspace.sh теперь поддерживает VR_NOP_EXTRA/VR_B_EXTRA (append). Прогон с этим NOP запущен; boot флейково-медленный (часть прогонов залипает на ignition ~20+мин не доходя до Data — разброс TCG/хост, НЕ паника).
+
+**Тулы:** find_e00.py/pin_e00.py (поиск [reg,#0xe00]), rd_str.py, poll_*.sh. Slide-формула: vbar−0xfffffe0008a5f000. far=0xe00 = base(x20)=NULL, offset 0xe00 (НЕ base=0xe00). **Next:** поймать первичную паник-строку (прогон с VR_NOP_EXTRA дошедший до Data) → она назовёт APFS/keystore-функцию первопричины → точечный фикс. Параллельно: этот паник-handler-null-фикс (x20) стоит сделать общим (VR_NOP 0x8ab04a8 или дать x20 валидный) — тогда ВСЕ будущие краши будут печатать причину, не вися.

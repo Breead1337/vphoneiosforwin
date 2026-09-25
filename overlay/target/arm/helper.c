@@ -7908,7 +7908,10 @@ void arm_log_exception(CPUState *cs)
      * The LAST entry before the boot hangs is the fatal userspace crash the coredump
      * path ("Corefile is not yet initialized") can't otherwise attribute. */
     if (getenv("VR_EXCLOG") &&
-        (idx == EXCP_DATA_ABORT || idx == EXCP_PREFETCH_ABORT || idx == EXCP_UDEF)) {
+        (idx == EXCP_DATA_ABORT || idx == EXCP_PREFETCH_ABORT || idx == EXCP_UDEF) &&
+        (&ARM_CPU(cs)->env)->exception.vaddress < 0x100000) {
+        /* Only near-NULL faults (the fatal crashes) — logging every demand-page
+         * abort with fflush perturbs timing enough to change the boot outcome. */
         CPUARMState *env = &ARM_CPU(cs)->env;
         const char *en = (idx == EXCP_DATA_ABORT) ? "DABT" :
                          (idx == EXCP_PREFETCH_ABORT) ? "PABT" : "UDEF";

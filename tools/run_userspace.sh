@@ -91,6 +91,8 @@ export VR_WATCH="0xfffffe0008f77aac,0xfffffe0008ad5a9c,0xfffffe0008be9f70,0xffff
 export VR_TRUSTCACHE="$TC"                            # QEMU-side pre-load; see overlay/hw/vmapple/vresearch101.c
 # Append ad-hoc watches (e.g. iBoot EL0 VAs) without disturbing the kernel hook set.
 [ -n "$VR_WATCH_EXTRA" ] && export VR_WATCH="$VR_WATCH,$VR_WATCH_EXTRA"
+[ -n "$VR_NOP_EXTRA" ] && export VR_NOP="$VR_NOP,$VR_NOP_EXTRA"
+[ -n "$VR_B_EXTRA" ] && export VR_B="$VR_B,$VR_B_EXTRA"
 set +e
 
 timeout ${T:-360} "$Q" -M vresearch101 -smp 1 -m 4G \
