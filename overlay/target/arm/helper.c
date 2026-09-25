@@ -7903,6 +7903,24 @@ void arm_log_exception(CPUState *cs)
         qemu_log_mask(CPU_LOG_INT, "Taking exception %d [%s] on CPU %d\n",
                       idx, exc, cs->cpu_index);
     }
+
+    /* VR_EXCLOG: log synchronous aborts (data/prefetch/undef) with EL, PC, FAR, ESR.
+     * The LAST entry before the boot hangs is the fatal userspace crash the coredump
+     * path ("Corefile is not yet initialized") can't otherwise attribute. */
+    if (getenv("VR_EXCLOG") &&
+        (idx == EXCP_DATA_ABORT || idx == EXCP_PREFETCH_ABORT || idx == EXCP_UDEF)) {
+        CPUARMState *env = &ARM_CPU(cs)->env;
+        const char *en = (idx == EXCP_DATA_ABORT) ? "DABT" :
+                         (idx == EXCP_PREFETCH_ABORT) ? "PABT" : "UDEF";
+        static FILE *exclog = NULL; static bool exc_init = false;
+        if (!exc_init) { exc_init = true; exclog = fopen("/home/ard/vrwork/exc.log", "w"); }
+        if (exclog) {
+            fprintf(exclog, "[EXC %s] EL%d pc=0x%" PRIx64 " far=0x%" PRIx64 " esr=0x%" PRIx64 "\n",
+                    en, arm_current_el(env), env->pc,
+                    env->exception.vaddress, (uint64_t)env->exception.syndrome);
+            fflush(exclog);
+        }
+    }
 }
 
 /*
