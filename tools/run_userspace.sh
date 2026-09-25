@@ -102,7 +102,7 @@ timeout ${T:-360} "$Q" -M vresearch101 -smp 1 -m 4G \
   -drive if=none,id=root0,format=raw,file="${ROOT2:-$W/root2.img}",file.locking=off \
   -device vmapple-virtio-blk-pci,drive=root0,variant=root \
   -display gtk -serial file:"$W/us.uart" \
-  -d unimp,guest_errors,int -D "$W/us.log" \
+  -d ${VR_DFLAGS:-unimp,guest_errors,int} -D "$W/us.log" \
   -cpu apple-gxf,pauth-noop=off,pauth-impdef=on
 
 echo "RC=$?"

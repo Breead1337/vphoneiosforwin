@@ -7909,9 +7909,11 @@ void arm_log_exception(CPUState *cs)
      * path ("Corefile is not yet initialized") can't otherwise attribute. */
     if (getenv("VR_EXCLOG") &&
         (idx == EXCP_DATA_ABORT || idx == EXCP_PREFETCH_ABORT || idx == EXCP_UDEF) &&
-        (&ARM_CPU(cs)->env)->exception.vaddress < 0x100000) {
-        /* Only near-NULL faults (the fatal crashes) — logging every demand-page
-         * abort with fflush perturbs timing enough to change the boot outcome. */
+        ((&ARM_CPU(cs)->env)->exception.vaddress < 0x100000 ||
+         arm_current_el(&ARM_CPU(cs)->env) == 1)) {
+        /* Near-NULL faults OR any EL1 (kernel) abort — the primary kernel fault that
+         * triggers the panic, plus the panic handler's own null-deref. Skip normal EL0
+         * demand-page aborts (logging every one with fflush perturbs boot timing). */
         CPUARMState *env = &ARM_CPU(cs)->env;
         const char *en = (idx == EXCP_DATA_ABORT) ? "DABT" :
                          (idx == EXCP_PREFETCH_ABORT) ? "PABT" : "UDEF";
