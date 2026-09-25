@@ -2194,3 +2194,15 @@ boot_v6 (PID-трамплин) результат + анализ getpid:
 1. (диагностика) Отключить/обойти сломанный coredump-путь (VR-хук на kern_dump/coredump в KC @~0x241811) ЛИБО проверить доставку EL1 sync-abort в sleh под SPTM → увидеть реальную panic-строку primary-краша (назовёт APFS-функцию/ассерт).
 2. (фикс) Локализовать 0xfffffe0031a505e4 в APFS-kext (по slide из vbar того же прогона) → понять NULL-объект+0xe00; затем либо застабить APFS-крипто-путь для unencrypted Data-тома (skip media-keys/keybag), либо хукнуть media-keys на успех, либо фейкнуть keystore (AppleKeyStore kext).
 3. Весь data-protection/keystore стек SEP-завязан — фейк даёт null-объекты, крашащие разные пути (APFS null+0xe00, и др.). Возможно, нужен комплексный стаб крипто-пути APFS для unencrypted-томов.
+
+## Обновление 25.09 (92) — флейковость = ранний PPL/SPTM protected-copy краш; VBAR-slide подтверждён
+
+Прогоны с VR_EXCLOG (T=1400/2400) часто НЕ доходят до mount Data — залипают рано. Детальный дамп near-null EL1-аборта показал причину «залипаний»: **ранний kernel-краш `memcpy dst=0x4000` (insn 38001423 strb w3,[x1]), caller 0xfffffe0008c142e4** (по slide=vbar−0xfffffe0008a5f000; для boot_ks vbar=0xfffffe0034c43000 → slide 0x2C1E4000; для boot_exc2 slide 0x375C0000 — оба кратны 0x200000).
+
+**Функция caller'а = PPL/SPTM protected-copy** (0xfffffe0008c141d0..0xc14300+): PAC-аутентификация указателей (`autda x16,x17`; `movk x17,#0x250c,lsl#48` дискриминатор; `xpacd`+`cmp`+`brk #0xc472` при провале), тоггл `msr pan #0/#1`, Apple-регистр `msr s3_6_c15_c1_6, x8` (магия 0x2020a53a302abae6). При `cbz x8` (протектед-указатель из [x22]==0) → `mov x16,#0` → далее `ldrb [x16,#0x73]` и memcpy с dst=0x4000 (bad). Т.е. защищённый объект NULL → PPL-copy в мусорный адрес → kernel abort → paника (скрыта coredump-петлёй) → зависание.
+
+**Вывод:** флейковость = недетерминированный NULL protected-объект в PPL/SPTM-пути (вероятно uninitialized/PAC-несогласованность — резонирует с KASLR/timing-разбросом). Это САМЫЙ глубокий слой (SPTM/PPL/PAC). Вместе с keystore-стеной (APFS far=0xe00) — оба требуют серьёзной работы по SPTM/keystore-эмуляции.
+
+**Инструменты:** `find_vbar.py` (VBAR link 0xfffffe0008a5f000), `dis_kc.py` (дизасм по link-VA, flat-map), `parse_fileset.py` (kext link-базы: APFS 0xfffffe000887aa00 __text, AppleSEPKeyStore 0x7230b50, AppleSEPManager 0x72360d0), VR_EXCLOG detailed dump (helper.c).
+
+**Операционное:** WSL нестабилен под нагрузкой (Wsl/Service/0x8007274c таймауты при load 9+); частые 40-мин прогоны истощают хост. Дизасм всего 40МБ KC капстоном >120с (таймаут) — работать по узким окнам/секциям. **Следующий заход по этим стенам — свежая целевая сессия.**
