@@ -7940,6 +7940,57 @@ void arm_log_exception(CPUState *cs)
                     address_space_read(cs->as, r.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &iw, 4);
                 }
                 fprintf(exclog, "  insn@pc = %08x\n", iw);
+                /* Scan the panic-state global (handler reads adrp 0x9407000) for the
+                 * stored panic reason string, which panic() saves before the handler
+                 * runs (and crashes). slide = vbar - VBAR_link. Once. */
+                static bool pdumped = false;
+                if (!pdumped) {
+                    pdumped = true;
+                    uint64_t slide = env->cp15.vbar_el[1] - 0xfffffe0008a5f000ULL;
+                    static char pbuf[0x8000];
+                    for (unsigned base_i = 0; base_i < 2; base_i++) {
+                        uint64_t pbase = (base_i ? 0xfffffe0009407000ULL : 0xfffffe0009468000ULL) + slide;
+                        int n = 0;
+                        for (uint64_t a = pbase; a < pbase + 0x4000; a += 4) {
+                            GetPhysAddrResult r2 = {}; ARMMMUFaultInfo fi2 = {};
+                            if (!get_phys_addr(env, a, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r2, &fi2)) {
+                                address_space_read(cs->as, r2.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &pbuf[n], 4);
+                            } else { pbuf[n]=0; pbuf[n+1]=0; pbuf[n+2]=0; pbuf[n+3]=0; }
+                            n += 4;
+                        }
+                        int run = 0;
+                        for (int i = 0; i < n; i++) {
+                            char c = pbuf[i];
+                            if (c >= 0x20 && c < 0x7f) { run++; }
+                            else { if (run >= 8) fprintf(exclog, "  PSTR@0x%" PRIx64 ": %.*s\n", pbase+i-run, run, &pbuf[i-run]); run = 0; }
+                        }
+                    }
+                    /* Follow pointers the handler reads (adrp 0x9407000 + #0xe10 / #0xe00 /
+                     * #0xe08) — one of them is the stored panic reason string. */
+                    uint64_t goffs[] = {0xe10, 0xe00, 0xe08, 0xe18, 0xe20, 0xe28, 0xe30};
+                    for (unsigned gi = 0; gi < sizeof(goffs)/sizeof(goffs[0]); gi++) {
+                        uint64_t pa_of = 0xfffffe0009407000ULL + slide + goffs[gi];
+                        uint64_t ptr = 0;
+                        GetPhysAddrResult r3 = {}; ARMMMUFaultInfo fi3 = {};
+                        if (!get_phys_addr(env, pa_of, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r3, &fi3)) {
+                            address_space_read(cs->as, r3.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &ptr, 8);
+                        }
+                        if (ptr >= 0xfffffe0000000000ULL) {
+                            char sb[200]; int m = 0;
+                            for (uint64_t a = ptr; a < ptr + 192; a += 4) {
+                                GetPhysAddrResult r4 = {}; ARMMMUFaultInfo fi4 = {};
+                                if (!get_phys_addr(env, a, MMU_DATA_LOAD, 0, arm_mmu_idx(env), &r4, &fi4)) {
+                                    address_space_read(cs->as, r4.f.phys_addr, MEMTXATTRS_UNSPECIFIED, &sb[m], 4);
+                                } else { sb[m]=0; }
+                                m += 4;
+                            }
+                            sb[199] = 0;
+                            int printable = (sb[0] >= 0x20 && sb[0] < 0x7f);
+                            fprintf(exclog, "  PTR@+0x%" PRIx64 " -> 0x%" PRIx64 "%s%.190s\n",
+                                    goffs[gi], ptr, printable ? " STR=" : " (nonstr)", printable ? sb : "");
+                        }
+                    }
+                }
             }
             fflush(exclog);
         }

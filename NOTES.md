@@ -2218,3 +2218,14 @@ boot_v6 (PID-трамплин) результат + анализ getpid:
 **Первичная паника (при mount Data) СКРЫТА.** Чтобы раскрыть: `VR_NOP_EXTRA=0xfffffe0008ab04a8` (заNOПить tbnz → обработчик пойдёт по пути печати «Original panic string» @0x8ab04f8 вместо краша). run_userspace.sh теперь поддерживает VR_NOP_EXTRA/VR_B_EXTRA (append). Прогон с этим NOP запущен; boot флейково-медленный (часть прогонов залипает на ignition ~20+мин не доходя до Data — разброс TCG/хост, НЕ паника).
 
 **Тулы:** find_e00.py/pin_e00.py (поиск [reg,#0xe00]), rd_str.py, poll_*.sh. Slide-формула: vbar−0xfffffe0008a5f000. far=0xe00 = base(x20)=NULL, offset 0xe00 (НЕ base=0xe00). **Next:** поймать первичную паник-строку (прогон с VR_NOP_EXTRA дошедший до Data) → она назовёт APFS/keystore-функцию первопричины → точечный фикс. Параллельно: этот паник-handler-null-фикс (x20) стоит сделать общим (VR_NOP 0x8ab04a8 или дать x20 валидный) — тогда ВСЕ будущие краши будут печатать причину, не вися.
+
+## Обновление 25.09 (94) — 🚀 boot 26мин→2.5мин; первичная паника = KERNEL DATA ABORT
+
+**УСКОРЕНИЕ 10x (коммит 27bd5fc):** причина 26-мин boot'ов и залипаний — два налога, бьющие по фазе mapping кэша: **VR_SVCLOG** (~16 MMU-walk+fprintf+fflush на КАЖДЫЙ EL0-syscall) и **`-d int`** (лог каждого исключения = demand-page фолта). Без них + `VR_DFLAGS=unimp,guest_errors` → ondemand+mount Data за **~145с** и НАДЁЖНО. run_userspace.sh: `VR_DFLAGS` выбирает `-d`.
+
+**Раскрыт ТИП первичной паники (на быстром boot'е):** VR_EXCLOG detailed dump far=0xe00 (панич-обработчик, x20=NULL) — в РЕГИСТРАХ указатели на статические строки KC (link=rt−slide, slide=vbar−0x8a5f000):
+- x1 → «panic» (@0x70433dd), **x2 → «%s at pc 0x%016llx, lr 0x%016llx (saved state: %p%s)…»** (@0x7054f9a).
+- Это формат `panic_with_thread_kernel_state` = **KERNEL DATA ABORT**. Значит **первичная паника при mount Data — это kernel-фолт (data abort) в APFS/mount-пути**, НЕ явный assert. Панич-обработчик крашится на x20=NULL (SPTM-context/saved-state не настроен эмулятором) → зависает, скрывая fault pc/lr.
+- ⚠️ Флейковость = интермиттентная РАННЯЯ паника (тоже kernel-abort, до Data) — некоторые прогоны залипают на ней (far=0x4000/0xe00 в панич-обработчике). На быстром boot'е ~половина прогонов доходит до Data.
+
+**Next:** дампнуть saved_state (arm_saved_state_t) из панич-обработчика → fault pc/lr первичного kernel-abort'а → точное место в APFS-mount (где null-дереф от media-keys c002). ЛИБО сделать панич-обработчик устойчивым к null SPTM (тогда напечатает «%s at pc…» с адресами). Техника: читать строки по указателям из регистров краша (link=rt−slide, читать из KC-файла офлайн). Тулы: rd_panic.py, poll_fast/pstr/ptr.sh.
