@@ -2257,3 +2257,12 @@ boot_v6 (PID-трамплин) результат + анализ getpid:
 **Результат (boot_unenc, ~2.5 мин):** ✅ **ВСЕ 6 томов APFS смонтированы** — System, Preboot, Data (/private/var), Update (/private/var/MobileSoftwareUpdate), xART (/private/xarts), Hardware (/private/var/hardware). mount-phase-2 полностью отработал.
 
 **🔴 НОВАЯ СТЕНА (дальше):** после монтирования всех томов — `AppleImage4: magazine[pdmg/cptx/dvdi/c1bt/c1ab/c1gn/c1sm/d1ma/c1ge/c1er]: failed to read nonce slot data: 2` (ENOENT — nonce-слоты Image4/anti-replay для образов/криптексов не читаются; SEP/nvram-nonce нет). Затем kernel data abort → тот же зависающий панич-обработчик (far=0xe00, x20=NULL SPTM). first-dump x19→формат kernel-abort (0x7054f9a) — значит новый краш тоже kernel-фолт, вероятно из AppleImage4-nonce-пути. Next: узнать fault-pc нового abort'а (saved_state / string-ptr техника) → обойти AppleImage4 nonce-чтение. Итерация ~2.5 мин.
+
+## Обновление 26.09 (97) — стена после 6 томов: НЕ простая (null-объект каскад)
+
+После монтирования всех 6 томов — `AppleImage4: magazine[pdmg/cptx/dvdi/c1bt/…]: failed to read nonce slot data: 2` затем краш. Разобрал (техника: EL1-аборты в exc.log, не-copyio синглтоны; строки-указатели/панич-строки офлайн):
+- **Первичный фолт: APFS null-дереф** — pc=link 0x88b77a8 (APFS __text), insn `ldp x0,x23,[x0,#8]`, **x0=NULL, far=0x8**. APFS-функцию (@0x88b7788, дерефит [x0+8], зовёт 0x8c9718c/0x8c95ef8, работает с [x19+0xa40/0xa48]) вызвали с null-объектом.
+- Каскад: null-дереф → sleh_sync → паника **«attempt to set invalid recovery handler %p on kernel saved-state %p @sleh.c:3519»** (строка @0x7055498, panic @0x92be7a4) → null-SPTM панич-обработчик (far=0xe00, x20=NULL) → цикл/зависание. Также вторичный stack-fault @0x92be7b0 (far=стек, переполнение от рекурсии паники).
+- ⚠️ В ОТЛИЧИЕ от «unencrypted» (чистый policy-ассерт → 1 NOP), тут **отсутствует объект** (x0=NULL) — заNOПить дереф нельзя (мусор поедет дальше). Нужно: понять, откуда null (вероятно AppleImage4-nonce не настроил объект/keybag), т.е. хукнуть AppleImage4 nonce-чтение на успех ЛИБО найти проверку выше. Многошагово.
+
+**Прогресс сессии итого:** COW-фикс → data-protection-обход → ускорение 10x → unencrypted-volume-обход (все 6 томов!) → эта стена (AppleImage4-nonce/APFS-null). Дошли: secure-boot + userspace + ВСЕ 6 томов APFS + 10 boot-тасков. Следующее (сложнее): AppleImage4 nonce.
