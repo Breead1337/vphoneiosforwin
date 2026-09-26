@@ -9,7 +9,11 @@ TC=${TC:-/mnt/d/vphonewin/_work/tc/merged.trst.bin}   # cloudOS(262) + iPhone-OS
 #  finds them instead of rejecting "CodeSignature".)
 
 rm -f $W/us.uart $W/us.log $W/kprintf.log $W/svc.log $W/ibootwatch.log
-export VR_NOP="0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe0007cf3d38,0xfffffe0007cf3d9c,0xfffffe0008f1781c,0xfffffe0008aaab18,0xfffffe0008aaab34,0xfffffe0008aafd1c"
+export VR_NOP="${VR_NOP:-0xfffffe0008ed691c,0xfffffe00088cc774,0xfffffe00088cc788,0xfffffe0007cf3d38,0xfffffe0007cf3d9c,0xfffffe0008f1781c,0xfffffe0008aaab18,0xfffffe0008aaab34,0xfffffe0008aafd1c,0xfffffe000891da28}"
+# 0xfffffe000891da28 — APFS handle_mount: NOP the `tbnz w8,#0,<panic>` that fires
+#   "unencrypted data volume is not allowed" (@apfs :0x939). Our Data/Update/Hardware
+#   volumes are unencrypted (flags 0x1); iOS policy panics on them. NOP -> falls through
+#   to the OK return -> all 6 APFS volumes mount (System/Preboot/Data/Update/xART/Hardware).
 # 0xfffffe0008ed691c — rootvp auth (release KC: cbnz w0, #0x8ed6b78 panic "rootvp not authenticated").
 # 0xfffffe00088cc774,0xfffffe00088cc788 — APFS handle_get_dev_by_role entitlement bypass (Patch 16).
 # 0xfffffe0007cf3d38 — AMFI release KC b.ne assertion failed (*cs_flags & initial_cs_flags) NOP.

@@ -2243,3 +2243,17 @@ boot_v6 (PID-трамплин) результат + анализ getpid:
 2. ЛИБО boot-arg/глобал, разрешающий unencrypted data volume (research-билды иногда имеют).
 3. ЛИБО пересоздать Data-том зашифрованным (нужны ключи/SEP — дороже).
 Начать с (1): проверка crypto-флага тома в handle_mount → паника. Итерация теперь ~2.5 мин (ускорение 10x).
+
+## Обновление 26.09 (96) — 🎉 ОБХОД СРАБОТАЛ: все 6 томов монтируются
+
+**Нашёл и обошёл ассерт "unencrypted data volume is not allowed".** Ссылка на строку (детерминированный поиск по сырым байтам: `add xN,xN,#0x920` + предшествующий `adrp` на страницу 0x7634000; тул find_unenc_ref.py) → APFS @0xfffffe000891da50. Дизасм проверки:
+```
+0x891da24: ldrb w8,[x8,#0x108]        ; флаг тома, бит0 = "unencrypted"
+0x891da28: tbnz w8,#0, 0x891da3c       ; бит0 → panic "unencrypted data volume..." (@apfs:0x939=2361)
+0x891da2c: ...retab                     ; иначе OK-возврат
+```
+**ФИКС: `VR_NOP 0xfffffe000891da28`** (NOP tbnz → всегда OK-возврат). Добавлен в постоянный VR_NOP в run_userspace.sh (+ теперь VR_NOP уважает override как VR_MOV0/RET0/B).
+
+**Результат (boot_unenc, ~2.5 мин):** ✅ **ВСЕ 6 томов APFS смонтированы** — System, Preboot, Data (/private/var), Update (/private/var/MobileSoftwareUpdate), xART (/private/xarts), Hardware (/private/var/hardware). mount-phase-2 полностью отработал.
+
+**🔴 НОВАЯ СТЕНА (дальше):** после монтирования всех томов — `AppleImage4: magazine[pdmg/cptx/dvdi/c1bt/c1ab/c1gn/c1sm/d1ma/c1ge/c1er]: failed to read nonce slot data: 2` (ENOENT — nonce-слоты Image4/anti-replay для образов/криптексов не читаются; SEP/nvram-nonce нет). Затем kernel data abort → тот же зависающий панич-обработчик (far=0xe00, x20=NULL SPTM). first-dump x19→формат kernel-abort (0x7054f9a) — значит новый краш тоже kernel-фолт, вероятно из AppleImage4-nonce-пути. Next: узнать fault-pc нового abort'а (saved_state / string-ptr техника) → обойти AppleImage4 nonce-чтение. Итерация ~2.5 мин.
